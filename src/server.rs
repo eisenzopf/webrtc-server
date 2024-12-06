@@ -5,7 +5,7 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -33,6 +33,7 @@ impl SignalingServer {
             eprintln!("Failed to bind to {}: {}", self.address, e);
             anyhow::anyhow!("Failed to bind: {}", e)
         })?;
+        println!("Successfully bound to {}", self.address);
         println!("Signaling server listening on {}", self.address);
 
         let metrics = self.metrics.clone();
@@ -79,6 +80,7 @@ impl SignalingServer {
         while let Some(msg) = ws_receiver.next().await {
             let msg = msg?;
             let msg_str = msg.to_text()?;
+            println!("Received message: {}", msg_str);
             let signal_msg: SignalingMessage = serde_json::from_str(msg_str)?;
 
             // Update metrics for the peer
@@ -87,94 +89,93 @@ impl SignalingServer {
                 metrics
                     .entry(peer_id.clone())
                     .or_insert_with(|| ConnectionMetrics::new(peer_id.clone()))
-                    .last_seen = Instant::now();
+                    .update_last_seen();
             }
 
-            match signal_msg {
-                SignalingMessage::Join { room_id, peer_id } => {
-                    let room = Self::get_or_create_room(&rooms, &room_id).await?;
-                    if room.peers.len() >= room.media_settings.max_participants {
-                        let error_msg = SignalingMessage::MediaError {
-                            error_type: "room_full".to_string(),
-                            description: "Room has reached maximum capacity".to_string(),
-                            peer_id: peer_id.clone(),
-                        };
-                        let mut sender = ws_sender.lock().await;
-                        sender.send(Message::Text(serde_json::to_string(&error_msg)?)).await?;
-                        continue;
-                    }
-
-                    current_peer_id = Some(peer_id.clone());
-                    current_room_id = Some(room_id.clone());
-
-                    let mut peers_write = peers.write().await;
-                    let room_peers = peers_write.entry(room_id.clone()).or_insert_with(Vec::new);
-                    let peer_list = room_peers
-                        .iter()
-                        .map(|(id, _)| id.clone())
-                        .collect::<Vec<_>>();
-
-                    room_peers.push((peer_id.clone(), ws_sender.clone()));
-
-                    Self::broadcast_to_room(&peers, &room_id, &SignalingMessage::PeerList {
-                        peers: peer_list,
-                    })
-                    .await?;
-                }
-                SignalingMessage::MediaOffer {
-                    room_id,
-                    sdp,
-                    from_peer,
-                    to_peer,
-                    media_types,
-                } => {
-                    let rooms = rooms.read().await;
-                    if let Some(room) = rooms.get(&room_id) {
-                        let allowed_types = &room.media_settings.allowed_media_types;
-                        if !media_types.iter().any(|mt| allowed_types.contains(mt)) {
-                            let error_msg = SignalingMessage::MediaError {
-                                error_type: "unsupported_media".to_string(),
-                                description: "One or more media types not allowed in this room"
-                                    .to_string(),
-                                peer_id: from_peer.clone(),
+            match signal_msg.message_type.as_str() {
+                "Join" => {
+                    if let (Some(room_id), Some(peer_id)) = (signal_msg.room_id, signal_msg.peer_id) {
+                        let room = Self::get_or_create_room(&rooms, &room_id).await?;
+                        if room.peers.len() >= room.media_settings.max_participants {
+                            let error_msg = SignalingMessage {
+                                message_type: "MediaError".to_string(),
+                                error_type: Some("room_full".to_string()),
+                                description: Some("Room has reached maximum capacity".to_string()),
+                                peer_id: Some(peer_id.clone()),
+                                ..Default::default()
                             };
                             let mut sender = ws_sender.lock().await;
-                            sender
-                                .send(Message::Text(serde_json::to_string(&error_msg)?))
-                                .await?;
+                            sender.send(Message::Text(serde_json::to_string(&error_msg)?)).await?;
                             continue;
                         }
-                    }
 
-                    Self::broadcast_to_room(
-                        &peers,
-                        &room_id,
-                        &SignalingMessage::MediaOffer {
-                            room_id: room_id.clone(),
-                            sdp,
-                            from_peer,
-                            to_peer,
-                            media_types,
-                        },
-                    )
-                    .await?;
-                }
-                SignalingMessage::LeaveRoom { room_id, peer_id } => {
-                    let mut peers_write = peers.write().await;
-                    if let Some(room_peers) = peers_write.get_mut(&room_id) {
-                        room_peers.retain(|(id, _)| id != &peer_id);
+                        current_peer_id = Some(peer_id.clone());
+                        current_room_id = Some(room_id.clone());
+
+                        let mut peers_write = peers.write().await;
+                        let room_peers = peers_write.entry(room_id.clone()).or_insert_with(Vec::new);
                         let peer_list = room_peers
                             .iter()
                             .map(|(id, _)| id.clone())
                             .collect::<Vec<_>>();
-                        Self::broadcast_to_room(&peers, &room_id, &SignalingMessage::PeerList {
-                            peers: peer_list,
-                        })
-                        .await?;
+
+                        room_peers.push((peer_id.clone(), ws_sender.clone()));
+
+                        let peer_list_msg = SignalingMessage {
+                            message_type: "PeerList".to_string(),
+                            peers: Some(peer_list),
+                            ..Default::default()
+                        };
+
+                        Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
+                    }
+                }
+                "MediaOffer" => {
+                    if let (Some(room_id), Some(from_peer), Some(to_peer), Some(sdp), Some(media_types)) = (
+                        signal_msg.room_id.as_ref(),
+                        signal_msg.from_peer.as_ref(),
+                        signal_msg.to_peer.as_ref(),
+                        signal_msg.sdp.as_ref(),
+                        signal_msg.media_types.as_ref(),
+                    ) {
+                        Self::broadcast_to_room(
+                            &peers,
+                            &room_id,
+                            &signal_msg,
+                        ).await?;
+                    }
+                }
+                "MediaAnswer" => {
+                    if let (Some(room_id), Some(from_peer), Some(to_peer), Some(sdp)) = (
+                        signal_msg.room_id.as_ref(),
+                        signal_msg.from_peer.as_ref(),
+                        signal_msg.to_peer.as_ref(),
+                        signal_msg.sdp.as_ref(),
+                    ) {
+                        Self::broadcast_to_room(
+                            &peers,
+                            &room_id,
+                            &signal_msg,
+                        ).await?;
+                    }
+                }
+                "IceCandidate" => {
+                    if let (Some(room_id), Some(from_peer), Some(to_peer), Some(candidate)) = (
+                        signal_msg.room_id.as_ref(),
+                        signal_msg.from_peer.as_ref(),
+                        signal_msg.to_peer.as_ref(),
+                        signal_msg.candidate.as_ref(),
+                    ) {
+                        Self::broadcast_to_room(
+                            &peers,
+                            &room_id,
+                            &signal_msg,
+                        ).await?;
                     }
                 }
                 _ => {
-                    // Handle other message types by broadcasting to room
+                    println!("Received unhandled message type: {}", signal_msg.message_type);
+                    // Optionally broadcast unhandled messages to room
                     if let Some(ref room_id) = current_room_id {
                         Self::broadcast_to_room(&peers, room_id, &signal_msg).await?;
                     }
@@ -191,10 +192,14 @@ impl SignalingServer {
                     .iter()
                     .map(|(id, _)| id.clone())
                     .collect::<Vec<_>>();
-                Self::broadcast_to_room(&peers, &room_id, &SignalingMessage::PeerList {
-                    peers: peer_list,
-                })
-                .await?;
+
+                let peer_list_msg = SignalingMessage {
+                    message_type: "PeerList".to_string(),
+                    peers: Some(peer_list),
+                    ..Default::default()
+                };
+
+                Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
             }
         }
 

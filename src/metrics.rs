@@ -23,4 +23,8 @@ impl ConnectionMetrics {
         self.packet_loss_rate = packet_loss;
         self.latency = latency;
     }
+
+    pub fn update_last_seen(&mut self) {
+        self.last_seen = std::time::Instant::now();
+    }
 }

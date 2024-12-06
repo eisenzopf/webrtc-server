@@ -98,8 +98,7 @@
                 ws.onopen = () => {
                     updateStatus('Connected to signaling server');
                     const roomId = document.getElementById('roomId').value;
-                    sendSignal({
-                        type: 'Join',
+                    sendSignal('Join', {
                         room_id: roomId,
                         peer_id: peerId
                     });
@@ -109,7 +108,6 @@
                 ws.onerror = err => updateStatus('WebSocket error: ' + err.message, true);
                 ws.onclose = () => updateStatus('Disconnected from server', true);
 
-                // Request audio permissions early
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 document.getElementById('audioStatus').textContent = 'Audio status: Ready';
             } catch (err) {
@@ -117,9 +115,54 @@
             }
         }
 
-        function sendSignal(data) {
+        function sendSignal(messageType, data = {}) {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(data));
+                let message;
+                switch (messageType) {
+                    case 'Join':
+                        message = {
+                            Join: {
+                                room_id: data.room_id,
+                                peer_id: data.peer_id
+                            }
+                        };
+                        break;
+                    case 'MediaOffer':
+                        message = {
+                            Offer: {
+                                room_id: data.room_id,
+                                sdp: data.sdp,
+                                from_peer: data.from_peer,
+                                to_peer: data.to_peer
+                            }
+                        };
+                        break;
+                    case 'MediaAnswer':
+                        message = {
+                            Answer: {
+                                room_id: data.room_id,
+                                sdp: data.sdp,
+                                from_peer: data.from_peer,
+                                to_peer: data.to_peer
+                            }
+                        };
+                        break;
+                    case 'IceCandidate':
+                        message = {
+                            IceCandidate: {
+                                room_id: data.room_id,
+                                candidate: data.candidate,
+                                from_peer: data.from_peer,
+                                to_peer: data.to_peer
+                            }
+                        };
+                        break;
+                    default:
+                        console.error('Unknown message type:', messageType);
+                        return;
+                }
+                console.log("Sending message:", message);
+                ws.send(JSON.stringify(message));
             }
         }
 
@@ -150,8 +193,7 @@
 
                 peerConnection.onicecandidate = event => {
                     if (event.candidate) {
-                        sendSignal({
-                            type: 'IceCandidate',
+                        sendSignal('IceCandidate', {
                             room_id: roomId,
                             candidate: JSON.stringify(event.candidate),
                             from_peer: peerId,
@@ -164,8 +206,7 @@
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
                 
-                sendSignal({
-                    type: 'MediaOffer',
+                sendSignal('MediaOffer', {
                     room_id: roomId,
                     sdp: JSON.stringify(offer),
                     from_peer: peerId,
@@ -180,41 +221,47 @@
 
         async function handleSignaling(event) {
             const message = JSON.parse(event.data);
-            const roomId = document.getElementById('roomId').value;
-            const peerId = document.getElementById('peerId').value;
+            console.log("Received message:", message);
+            
+            // Determine the message type from the enum variant
+            const messageType = Object.keys(message)[0];
+            const data = message[messageType];
 
-            switch (message.type) {
+            switch (messageType) {
                 case 'PeerList':
-                    document.getElementById('peerList').textContent = 
-                        'Connected peers: ' + message.peers.join(', ');
+                    if (data.peers) {
+                        document.getElementById('peerList').textContent = 
+                            'Connected peers: ' + data.peers.join(', ');
+                    }
                     break;
-
-                case 'MediaOffer':
-                    if (message.to_peer === '*' || message.to_peer === peerId) {
-                        await peerConnection.setRemoteDescription(JSON.parse(message.sdp));
+                case 'Offer':
+                    if (data.to_peer === '*' || data.to_peer === peerId) {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                            type: 'offer',
+                            sdp: data.sdp
+                        }));
                         const answer = await peerConnection.createAnswer();
                         await peerConnection.setLocalDescription(answer);
                         
-                        sendSignal({
-                            type: 'MediaAnswer',
+                        sendSignal('MediaAnswer', {
                             room_id: roomId,
-                            sdp: JSON.stringify(answer),
+                            sdp: answer.sdp,
                             from_peer: peerId,
-                            to_peer: message.from_peer,
-                            media_types: ['Audio']
+                            to_peer: data.from_peer
                         });
                     }
                     break;
-
-                case 'MediaAnswer':
-                    if (message.to_peer === '*' || message.to_peer === peerId) {
-                        await peerConnection.setRemoteDescription(JSON.parse(message.sdp));
+                case 'Answer':
+                    if (data.to_peer === '*' || data.to_peer === peerId) {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                            type: 'answer',
+                            sdp: data.sdp
+                        }));
                     }
                     break;
-
                 case 'IceCandidate':
-                    if (message.to_peer === '*' || message.to_peer === peerId) {
-                        await peerConnection.addIceCandidate(JSON.parse(message.candidate));
+                    if (data.to_peer === '*' || data.to_peer === peerId) {
+                        await peerConnection.addIceCandidate(JSON.parse(data.candidate));
                     }
                     break;
             }
