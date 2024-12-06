@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
+use futures_util::stream::SplitSink;
+use tokio_tungstenite::tungstenite::Message;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum SignalingMessage {
@@ -41,7 +44,7 @@ pub enum SignalingMessage {
     },
 }
 
-type PeerConnection = (String, WebSocketStream<TcpStream>);
+type PeerConnection = (String, Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>);
 type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
 
 pub struct SignalingServer {
@@ -81,7 +84,10 @@ impl SignalingServer {
 
     async fn handle_connection(stream: TcpStream, peers: PeerMap) -> Result<()> {
         let ws_stream = accept_async(stream).await?;
-        let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+        let (ws_sender, mut ws_receiver) = ws_stream.split();
+        let ws_sender = Arc::new(Mutex::new(ws_sender));
+        let mut current_peer_id: Option<String> = None;
+        let mut current_room_id: Option<String> = None;
 
         while let Some(msg) = ws_receiver.next().await {
             let msg = msg?;
@@ -92,18 +98,19 @@ impl SignalingServer {
                 SignalingMessage::Join { room_id, peer_id } => {
                     let mut peers_write = peers.write().await;
                     let room_peers = peers_write.entry(room_id.clone()).or_insert_with(Vec::new);
-                    let ws_stream = ws_sender.reunite(ws_receiver)?;
-                    room_peers.push((peer_id.clone(), ws_stream));
                     
-                    // Send current peer list to all peers in room
+                    current_peer_id = Some(peer_id.clone());
+                    current_room_id = Some(room_id.clone());
+                    
                     let peer_list = room_peers.iter()
                         .map(|(id, _)| id.clone())
                         .collect::<Vec<_>>();
                     
+                    room_peers.push((peer_id.clone(), ws_sender.clone()));
+                    
                     Self::broadcast_to_room(&peers, &room_id, &SignalingMessage::PeerList {
                         peers: peer_list,
                     }).await?;
-                    break;
                 },
                 SignalingMessage::RequestPeerList => {
                     let peers_read = peers.read().await;
@@ -111,7 +118,8 @@ impl SignalingServer {
                         .flat_map(|room| room.iter().map(|(id, _)| id.clone()))
                         .collect::<Vec<_>>();
                     
-                    ws_sender.send(tokio_tungstenite::tungstenite::Message::Text(
+                    let mut guard = ws_sender.lock().await;
+                    guard.send(tokio_tungstenite::tungstenite::Message::Text(
                         serde_json::to_string(&SignalingMessage::PeerList {
                             peers: all_peers,
                         })?,
@@ -148,6 +156,14 @@ impl SignalingServer {
             }
         }
 
+        // Clean up when connection closes
+        if let (Some(room_id), Some(peer_id)) = (current_room_id, current_peer_id) {
+            let mut peers_write = peers.write().await;
+            if let Some(room_peers) = peers_write.get_mut(&room_id) {
+                room_peers.retain(|(id, _)| id != &peer_id);
+            }
+        }
+
         Ok(())
     }
 
@@ -157,8 +173,9 @@ impl SignalingServer {
             let msg = tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::to_string(&message)?
             );
-            for (_, ws_stream) in room_peers.iter_mut() {
-                if let Err(e) = ws_stream.send(msg.clone()).await {
+            for (_, sender) in room_peers.iter_mut() {
+                let mut guard = sender.lock().await;
+                if let Err(e) = guard.send(msg.clone()).await {
                     eprintln!("Error broadcasting message: {}", e);
                 }
             }
