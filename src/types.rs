@@ -22,6 +22,10 @@ pub enum SignalingMessage {
         room_id: String,
         peer_id: String,
     },
+    Disconnect {
+        room_id: String,
+        peer_id: String,
+    },
     PeerList {
         peers: Vec<String>,
     },

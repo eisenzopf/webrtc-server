@@ -118,7 +118,6 @@
                         
                         switch (message.message_type) {
                             case "PeerList":
-                                console.log("Received peer list:", message.peers);
                                 const currentPeerId = document.getElementById('peerId').value;
                                 const otherPeers = message.peers.filter(p => p !== currentPeerId);
                                 const peerListDiv = document.getElementById('peerList');
@@ -134,33 +133,59 @@
 
                             case "Offer":
                                 console.log("Received offer from:", message.from_peer);
-                                if (!peerConnection) {
-                                    await setupPeerConnection();
+                                try {
+                                    if (!peerConnection) {
+                                        await setupPeerConnection();
+                                    }
+
+                                    if (peerConnection.signalingState !== "stable") {
+                                        console.log("Ignoring offer - not in stable state");
+                                        return;
+                                    }
+
+                                    console.log("Setting remote description (offer)");
+                                    await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                                        type: 'offer',
+                                        sdp: message.sdp
+                                    }));
+
+                                    console.log("Creating answer");
+                                    const answer = await peerConnection.createAnswer();
+                                    
+                                    console.log("Setting local description (answer)");
+                                    await peerConnection.setLocalDescription(answer);
+
+                                    console.log("Sending answer to:", message.from_peer);
+                                    sendSignal('Answer', {
+                                        room_id: document.getElementById('roomId').value,
+                                        sdp: answer.sdp,
+                                        from_peer: document.getElementById('peerId').value,
+                                        to_peer: message.from_peer
+                                    });
+                                } catch (err) {
+                                    console.error("Error handling offer:", err);
                                 }
-                                
-                                await peerConnection.setRemoteDescription(new RTCSessionDescription({
-                                    type: 'offer',
-                                    sdp: JSON.parse(message.sdp)
-                                }));
-                                
-                                const answer = await peerConnection.createAnswer();
-                                await peerConnection.setLocalDescription(answer);
-                                
-                                sendSignal('Answer', {
-                                    room_id: document.getElementById('roomId').value,
-                                    sdp: JSON.stringify(answer),
-                                    from_peer: document.getElementById('peerId').value,
-                                    to_peer: message.from_peer
-                                });
                                 break;
 
                             case "Answer":
                                 console.log("Received answer from:", message.from_peer);
-                                if (peerConnection) {
-                                    await peerConnection.setRemoteDescription(new RTCSessionDescription({
-                                        type: 'answer',
-                                        sdp: JSON.parse(message.sdp)
-                                    }));
+                                try {
+                                    if (!peerConnection) {
+                                        console.log("No peer connection available for answer");
+                                        return;
+                                    }
+
+                                    if (peerConnection.signalingState === "have-local-offer") {
+                                        console.log("Setting remote description (answer)");
+                                        await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                                            type: 'answer',
+                                            sdp: message.sdp
+                                        }));
+                                    } else {
+                                        console.log("Ignoring answer - not in have-local-offer state, current state:", peerConnection.signalingState);
+                                    }
+                                } catch (err) {
+                                    console.error("Error handling answer:", err);
                                 }
                                 break;
 
@@ -168,12 +193,14 @@
                                 console.log("Received ICE candidate from:", message.from_peer);
                                 if (peerConnection && peerConnection.remoteDescription) {
                                     try {
-                                        await peerConnection.addIceCandidate(
-                                            new RTCIceCandidate(JSON.parse(message.candidate))
-                                        );
+                                        const candidate = JSON.parse(message.candidate);
+                                        console.log("Adding ICE candidate:", candidate);
+                                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
                                     } catch (e) {
                                         console.error("Error adding received ICE candidate:", e);
                                     }
+                                } else {
+                                    console.log("Ignoring ICE candidate - no peer connection or remote description");
                                 }
                                 break;
                         }
@@ -233,23 +260,29 @@
                     return;
                 }
 
-                if (!peerConnection) {
+                if (!peerConnection || peerConnection.signalingState === "closed") {
                     await setupPeerConnection();
                 }
 
-                // Create and send offer to each peer
-                for (const targetPeer of otherPeers) {
-                    console.log('Creating offer for peer:', targetPeer);
-                    const offer = await peerConnection.createOffer();
-                    await peerConnection.setLocalDescription(offer);
-                    
-                    sendSignal('Offer', {
-                        room_id: roomId,
-                        sdp: JSON.stringify(offer),
-                        from_peer: peerId,
-                        to_peer: targetPeer
-                    });
+                if (peerConnection.signalingState !== "stable") {
+                    console.log("Cannot start call - connection not in stable state");
+                    return;
                 }
+
+                console.log('Creating offer as call initiator');
+                const offer = await peerConnection.createOffer();
+                console.log('Setting local description');
+                await peerConnection.setLocalDescription(offer);
+                
+                const targetPeer = otherPeers[0];
+                console.log('Sending offer to peer:', targetPeer);
+                
+                sendSignal('Offer', {
+                    room_id: roomId,
+                    sdp: offer.sdp,
+                    from_peer: peerId,
+                    to_peer: targetPeer
+                });
 
                 updateStatus('Call started');
             } catch (err) {
@@ -323,20 +356,20 @@
 
         async function setupPeerConnection() {
             if (!localStream) {
+                console.log("Getting user media");
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             }
 
+            console.log("Creating new RTCPeerConnection");
             peerConnection = new RTCPeerConnection({
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' }
                 ]
             });
 
-            // Store ICE candidates that arrive before the remote description
-            let iceCandidatesQueue = [];
-
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
+                    console.log("New ICE candidate:", event.candidate);
                     const roomId = document.getElementById('roomId').value;
                     const peerId = document.getElementById('peerId').value;
                     sendSignal('IceCandidate', {
@@ -348,14 +381,27 @@
                 }
             };
 
+            peerConnection.onconnectionstatechange = () => {
+                console.log("Connection state changed:", peerConnection.connectionState);
+            };
+
+            peerConnection.onsignalingstatechange = () => {
+                console.log("Signaling state changed:", peerConnection.signalingState);
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("ICE connection state changed:", peerConnection.iceConnectionState);
+            };
+
             peerConnection.ontrack = event => {
-                console.log('Received remote track');
+                console.log('Received remote track:', event);
                 const audio = new Audio();
                 audio.srcObject = event.streams[0];
                 audio.play().catch(e => console.error('Error playing audio:', e));
             };
 
             // Add local stream tracks to the connection
+            console.log("Adding local tracks to connection");
             localStream.getTracks().forEach(track => {
                 peerConnection.addTrack(track, localStream);
             });
@@ -374,16 +420,45 @@
         }
 
         function disconnect() {
-            if (peerConnection) {
-                peerConnection.close();
+            try {
+                // Send disconnect message before closing
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    const roomId = document.getElementById('roomId').value;
+                    const peerId = document.getElementById('peerId').value;
+                    
+                    sendSignal('Disconnect', {
+                        room_id: roomId,
+                        peer_id: peerId
+                    });
+                }
+
+                // Clean up WebRTC connection
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+
+                // Stop all tracks in the local stream
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                    localStream = null;
+                }
+
+                // Close WebSocket connection
+                if (ws) {
+                    ws.close();
+                    ws = null;
+                }
+
+                // Update UI
+                updateStatus('Disconnected');
+                document.getElementById('audioStatus').textContent = 'Audio status: Not connected';
+                document.getElementById('peerList').textContent = 'No peers connected';
+                document.getElementById('peerList').className = 'status';
+            } catch (err) {
+                console.error('Error during disconnect:', err);
+                updateStatus('Disconnect error: ' + err.message, true);
             }
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-            }
-            if (ws) {
-                ws.close();
-            }
-            updateStatus('Disconnected');
         }
 
         function updateStatus(message, isError = false) {

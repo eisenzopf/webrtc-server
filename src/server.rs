@@ -180,6 +180,48 @@ impl SignalingServer {
                                         SignalingMessage::IceCandidate { ref room_id, ref candidate, ref from_peer, ref to_peer } => {
                                             Self::broadcast_to_room(&peers, &room_id, &signal_msg).await?;
                                         },
+                                        SignalingMessage::Disconnect { room_id, peer_id } => {
+                                            Self::log(&format!("=== DISCONNECT REQUEST START ==="));
+                                            Self::log(&format!("Received disconnect request - Room: {}, Peer: {}", room_id, peer_id));
+                                            
+                                            // Clean up room and peer mappings
+                                            {
+                                                let mut rooms = rooms.write().await;
+                                                if let Some(room) = rooms.get_mut(&room_id) {
+                                                    room.peers.retain(|(id, _)| id != &peer_id);
+                                                    Self::log(&format!("Updated room peers - Remaining: {}", room.peers.len()));
+                                                    
+                                                    // Remove room if empty
+                                                    if room.peers.is_empty() {
+                                                        rooms.remove(&room_id);
+                                                        Self::log("Room removed as it's now empty");
+                                                    }
+                                                }
+                                            }
+                                            
+                                            // Update peer map
+                                            {
+                                                let mut peers_write = peers.write().await;
+                                                if let Some(room_peers) = peers_write.get_mut(&room_id) {
+                                                    room_peers.retain(|(id, _)| id != &peer_id);
+                                                    
+                                                    // Broadcast updated peer list to remaining peers
+                                                    let updated_peer_list = room_peers
+                                                        .iter()
+                                                        .map(|(id, _)| id.clone())
+                                                        .collect::<Vec<_>>();
+                                                    
+                                                    let peer_list_msg = SignalingMessage::PeerList {
+                                                        peers: updated_peer_list.clone(),
+                                                    };
+                                                    
+                                                    Self::log(&format!("Broadcasting updated peer list: {:?}", updated_peer_list));
+                                                    Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
+                                                }
+                                            }
+                                            
+                                            Self::log("=== DISCONNECT REQUEST END ===");
+                                        },
                                         _ => {
                                             Self::log(&format!("Received unhandled message type: {:?}", signal_msg));
                                             if let Some(ref room_id) = current_room_id {
