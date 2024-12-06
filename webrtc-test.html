@@ -94,19 +94,57 @@
                 document.getElementById('peerId').value = peerId;
                 
                 ws = new WebSocket('ws://127.0.0.1:8080');
+                console.log('WebSocket connection attempting...');
                 
                 ws.onopen = () => {
+                    console.log('WebSocket connection established');
                     updateStatus('Connected to signaling server');
                     const roomId = document.getElementById('roomId').value;
-                    sendSignal('Join', {
-                        room_id: roomId,
-                        peer_id: peerId
-                    });
+                    const peerId = document.getElementById('peerId').value;
+                    const joinMessage = {
+                        Join: {
+                            room_id: roomId,
+                            peer_id: peerId
+                        }
+                    };
+                    console.log('Sending join message:', joinMessage);
+                    ws.send(JSON.stringify(joinMessage));
                 };
 
-                ws.onmessage = handleSignaling;
-                ws.onerror = err => updateStatus('WebSocket error: ' + err.message, true);
-                ws.onclose = () => updateStatus('Disconnected from server', true);
+                ws.onmessage = (event) => {
+                    try {
+                        console.log("Raw message received:", event.data);
+                        const message = JSON.parse(event.data);
+                        console.log("Parsed message:", message);
+                        
+                        // Handle PeerList message specifically
+                        if (message.message_type === "PeerList" && message.peers) {
+                            console.log("Received peer list:", message.peers);
+                            const peerListDiv = document.getElementById('peerList');
+                            if (message.peers.length > 0) {
+                                const currentPeerId = document.getElementById('peerId').value;
+                                const otherPeers = message.peers.filter(p => p !== currentPeerId);
+                                if (otherPeers.length > 0) {
+                                    peerListDiv.textContent = 'Connected peers: ' + otherPeers.join(', ');
+                                    peerListDiv.className = 'status success';
+                                } else {
+                                    peerListDiv.textContent = 'No other peers connected';
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Failed to parse WebSocket message:', err);
+                        console.log("Raw message that failed:", event.data);
+                    }
+                };
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    updateStatus('WebSocket error: ' + error.message, true);
+                };
+                ws.onclose = () => {
+                    console.log('WebSocket connection closed');
+                    updateStatus('Disconnected from server', true);
+                };
 
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 document.getElementById('audioStatus').textContent = 'Audio status: Ready';
@@ -117,50 +155,16 @@
 
         function sendSignal(messageType, data = {}) {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                let message;
-                switch (messageType) {
-                    case 'Join':
-                        message = {
-                            Join: {
-                                room_id: data.room_id,
-                                peer_id: data.peer_id
-                            }
-                        };
-                        break;
-                    case 'MediaOffer':
-                        message = {
-                            Offer: {
-                                room_id: data.room_id,
-                                sdp: data.sdp,
-                                from_peer: data.from_peer,
-                                to_peer: data.to_peer
-                            }
-                        };
-                        break;
-                    case 'MediaAnswer':
-                        message = {
-                            Answer: {
-                                room_id: data.room_id,
-                                sdp: data.sdp,
-                                from_peer: data.from_peer,
-                                to_peer: data.to_peer
-                            }
-                        };
-                        break;
-                    case 'IceCandidate':
-                        message = {
-                            IceCandidate: {
-                                room_id: data.room_id,
-                                candidate: data.candidate,
-                                from_peer: data.from_peer,
-                                to_peer: data.to_peer
-                            }
-                        };
-                        break;
-                    default:
-                        console.error('Unknown message type:', messageType);
-                        return;
-                }
+                let message = {
+                    message_type: messageType,
+                    room_id: data.room_id,
+                    peer_id: data.peer_id,
+                    sdp: data.sdp,
+                    candidate: data.candidate,
+                    from_peer: data.from_peer,
+                    to_peer: data.to_peer
+                };
+                
                 console.log("Sending message:", message);
                 ws.send(JSON.stringify(message));
             }
@@ -170,51 +174,40 @@
             try {
                 const roomId = document.getElementById('roomId').value;
                 const peerId = document.getElementById('peerId').value;
-
-                if (!localStream) {
-                    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const peerListText = document.getElementById('peerList').textContent;
+                console.log('Starting call. Current peer list:', peerListText);
+                
+                const peers = peerListText.includes('Connected peers: ') 
+                    ? peerListText.replace('Connected peers: ', '').split(', ')
+                    : [];
+                
+                console.log('Found peers to call:', peers);
+                
+                if (peers.length === 0) {
+                    updateStatus('No other peers to call', true);
+                    return;
                 }
 
-                peerConnection = new RTCPeerConnection({
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' }
-                    ]
-                });
+                await setupPeerConnection();
 
-                localStream.getTracks().forEach(track => {
-                    peerConnection.addTrack(track, localStream);
-                });
+                // Create and send offer to each peer
+                for (const targetPeer of peers) {
+                    console.log('Creating offer for peer:', targetPeer);
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    
+                    console.log('Sending offer to peer:', targetPeer);
+                    sendSignal('MediaOffer', {
+                        room_id: roomId,
+                        sdp: JSON.stringify(offer),
+                        from_peer: peerId,
+                        to_peer: targetPeer
+                    });
+                }
 
-                peerConnection.ontrack = event => {
-                    const audio = new Audio();
-                    audio.srcObject = event.streams[0];
-                    audio.play();
-                };
-
-                peerConnection.onicecandidate = event => {
-                    if (event.candidate) {
-                        sendSignal('IceCandidate', {
-                            room_id: roomId,
-                            candidate: JSON.stringify(event.candidate),
-                            from_peer: peerId,
-                            to_peer: '*'
-                        });
-                    }
-                };
-
-                // Create and send offer
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                
-                sendSignal('MediaOffer', {
-                    room_id: roomId,
-                    sdp: JSON.stringify(offer),
-                    from_peer: peerId,
-                    to_peer: '*',
-                    media_types: ['Audio']
-                });
-
+                updateStatus('Call started');
             } catch (err) {
+                console.error('Error in startCall:', err);
                 updateStatus('Call error: ' + err.message, true);
             }
         }
@@ -223,30 +216,45 @@
             const message = JSON.parse(event.data);
             console.log("Received message:", message);
             
-            // Determine the message type from the enum variant
             const messageType = Object.keys(message)[0];
             const data = message[messageType];
+            console.log("Message type:", messageType, "Data:", data);
 
             switch (messageType) {
                 case 'PeerList':
+                    console.log('Received peer list:', data);
                     if (data.peers) {
-                        document.getElementById('peerList').textContent = 
-                            'Connected peers: ' + data.peers.join(', ');
+                        const currentPeerId = document.getElementById('peerId').value;
+                        const peers = data.peers.filter(p => p !== currentPeerId);
+                        const peerListDiv = document.getElementById('peerList');
+                        
+                        if (peers.length > 0) {
+                            peerListDiv.textContent = 'Connected peers: ' + peers.join(', ');
+                            peerListDiv.className = 'status success';
+                        } else {
+                            peerListDiv.textContent = 'No other peers connected';
+                            peerListDiv.className = 'status';
+                        }
+                        console.log('Updated peer list display:', peerListDiv.textContent);
                     }
                     break;
                 case 'Offer':
-                    if (data.to_peer === '*' || data.to_peer === peerId) {
+                    if (data.to_peer === document.getElementById('peerId').value) {
+                        console.log('Received offer, creating answer...');
+                        if (!peerConnection) {
+                            await setupPeerConnection();
+                        }
                         await peerConnection.setRemoteDescription(new RTCSessionDescription({
                             type: 'offer',
-                            sdp: data.sdp
+                            sdp: JSON.parse(data.sdp)
                         }));
                         const answer = await peerConnection.createAnswer();
                         await peerConnection.setLocalDescription(answer);
                         
                         sendSignal('MediaAnswer', {
-                            room_id: roomId,
-                            sdp: answer.sdp,
-                            from_peer: peerId,
+                            room_id: document.getElementById('roomId').value,
+                            sdp: JSON.stringify(answer),
+                            from_peer: document.getElementById('peerId').value,
                             to_peer: data.from_peer
                         });
                     }
@@ -265,6 +273,42 @@
                     }
                     break;
             }
+        }
+
+        async function setupPeerConnection() {
+            if (!localStream) {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
+
+            peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }
+                ]
+            });
+
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            peerConnection.ontrack = event => {
+                console.log('Received remote track');
+                const audio = new Audio();
+                audio.srcObject = event.streams[0];
+                audio.play();
+            };
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    const roomId = document.getElementById('roomId').value;
+                    const peerId = document.getElementById('peerId').value;
+                    sendSignal('IceCandidate', {
+                        room_id: roomId,
+                        candidate: JSON.stringify(event.candidate),
+                        from_peer: peerId,
+                        to_peer: '*'
+                    });
+                }
+            };
         }
 
         function toggleMute() {

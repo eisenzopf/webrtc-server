@@ -95,6 +95,7 @@ impl SignalingServer {
             match signal_msg.message_type.as_str() {
                 "Join" => {
                     if let (Some(room_id), Some(peer_id)) = (signal_msg.room_id, signal_msg.peer_id) {
+                        println!("Received join request - Room: {}, Peer: {}", room_id, peer_id);
                         let room = Self::get_or_create_room(&rooms, &room_id).await?;
                         if room.peers.len() >= room.media_settings.max_participants {
                             let error_msg = SignalingMessage {
