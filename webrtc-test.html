@@ -143,11 +143,13 @@
                                         return;
                                     }
 
-                                    console.log("Setting remote description (offer)");
-                                    await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                                    const offerDesc = {
                                         type: 'offer',
-                                        sdp: message.sdp
-                                    }));
+                                        sdp: message.sdp.replace(/\\r\\n/g, '\r\n')
+                                    };
+
+                                    console.log("Setting remote description (offer)");
+                                    await peerConnection.setRemoteDescription(new RTCSessionDescription(offerDesc));
 
                                     console.log("Creating answer");
                                     const answer = await peerConnection.createAnswer();
@@ -364,34 +366,9 @@
             peerConnection = new RTCPeerConnection({
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' }
-                ]
+                ],
+                sdpSemantics: 'unified-plan'
             });
-
-            peerConnection.onicecandidate = event => {
-                if (event.candidate) {
-                    console.log("New ICE candidate:", event.candidate);
-                    const roomId = document.getElementById('roomId').value;
-                    const peerId = document.getElementById('peerId').value;
-                    sendSignal('IceCandidate', {
-                        room_id: roomId,
-                        candidate: JSON.stringify(event.candidate),
-                        from_peer: peerId,
-                        to_peer: '*'
-                    });
-                }
-            };
-
-            peerConnection.onconnectionstatechange = () => {
-                console.log("Connection state changed:", peerConnection.connectionState);
-            };
-
-            peerConnection.onsignalingstatechange = () => {
-                console.log("Signaling state changed:", peerConnection.signalingState);
-            };
-
-            peerConnection.oniceconnectionstatechange = () => {
-                console.log("ICE connection state changed:", peerConnection.iceConnectionState);
-            };
 
             peerConnection.ontrack = event => {
                 console.log('Received remote track:', event);
@@ -400,11 +377,26 @@
                 audio.play().catch(e => console.error('Error playing audio:', e));
             };
 
-            // Add local stream tracks to the connection
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    sendSignal('IceCandidate', {
+                        room_id: document.getElementById('roomId').value,
+                        candidate: JSON.stringify(event.candidate),
+                        from_peer: document.getElementById('peerId').value,
+                        to_peer: document.getElementById('peerId').value
+                    });
+                }
+            };
+
             console.log("Adding local tracks to connection");
             localStream.getTracks().forEach(track => {
                 peerConnection.addTrack(track, localStream);
             });
+
+            peerConnection.onconnectionstatechange = () => {
+                console.log("Connection state:", peerConnection.connectionState);
+                updateStatus(`Connection state: ${peerConnection.connectionState}`);
+            };
 
             return peerConnection;
         }
@@ -421,7 +413,6 @@
 
         function disconnect() {
             try {
-                // Send disconnect message before closing
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     const roomId = document.getElementById('roomId').value;
                     const peerId = document.getElementById('peerId').value;
@@ -432,25 +423,21 @@
                     });
                 }
 
-                // Clean up WebRTC connection
                 if (peerConnection) {
                     peerConnection.close();
                     peerConnection = null;
                 }
 
-                // Stop all tracks in the local stream
                 if (localStream) {
                     localStream.getTracks().forEach(track => track.stop());
                     localStream = null;
                 }
 
-                // Close WebSocket connection
                 if (ws) {
                     ws.close();
                     ws = null;
                 }
 
-                // Update UI
                 updateStatus('Disconnected');
                 document.getElementById('audioStatus').textContent = 'Audio status: Not connected';
                 document.getElementById('peerList').textContent = 'No peers connected';

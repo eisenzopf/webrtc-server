@@ -4,7 +4,7 @@ mod server;
 mod types;
 
 use anyhow::Result;
-use server::SignalingServer;
+use crate::server::SignalingServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {

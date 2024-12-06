@@ -1,25 +1,23 @@
 use crate::types::*;
-
-#[derive(Clone, Debug)]
-pub struct MediaSettings {
-    pub max_participants: usize,
-    pub allowed_media_types: Vec<MediaType>,
-    pub bandwidth_limit: Option<u32>,
-}
-
-impl Default for MediaSettings {
-    fn default() -> Self {
-        Self {
-            max_participants: 10,
-            allowed_media_types: vec![MediaType::Audio],
-            bandwidth_limit: Some(128),
-        }
-    }
-}
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Room {
     pub id: String,
     pub peers: Vec<PeerConnection>,
     pub media_settings: MediaSettings,
+    pub media_relays: HashMap<String, MediaRelay>,
+    pub recording_enabled: bool,
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            peers: Vec::new(),
+            media_settings: MediaSettings::default(),
+            media_relays: HashMap::new(),
+            recording_enabled: false,
+        }
+    }
 }
