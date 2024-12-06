@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Voice Test Client</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 20px auto; 
+            padding: 20px; 
+            background-color: #f5f5f5;
+        }
+        .control-panel { 
+            margin: 20px 0; 
+            padding: 20px; 
+            border: 1px solid #ccc; 
+            border-radius: 4px;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status { 
+            margin: 10px 0; 
+            padding: 10px;
+            border-radius: 4px;
+        }
+        button { 
+            margin: 5px; 
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+        .error { 
+            color: white;
+            background-color: #ff5252;
+        }
+        .success { 
+            color: white;
+            background-color: #4CAF50;
+        }
+        input {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        label {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebRTC Voice Test Client</h1>
+    
+    <div class="control-panel">
+        <h3>Connection Settings</h3>
+        <div>
+            <label for="roomId">Room ID:</label>
+            <input type="text" id="roomId" value="test-room">
+            <label for="peerId">Peer ID:</label>
+            <input type="text" id="peerId">
+        </div>
+        <button onclick="connect()">Connect to Server</button>
+        <button onclick="startCall()">Start Call</button>
+        <button onclick="disconnect()">Disconnect</button>
+    </div>
+
+    <div class="control-panel">
+        <h3>Audio Controls</h3>
+        <button onclick="toggleMute()" id="muteButton">Mute</button>
+        <div class="status" id="audioStatus">Audio status: Not connected</div>
+    </div>
+
+    <div class="status" id="connectionStatus">Not connected</div>
+    <div class="status" id="peerList">No peers connected</div>
+
+    <script>
+        let ws;
+        let peerConnection;
+        let localStream;
+        let isMuted = false;
+
+        async function connect() {
+            try {
+                const peerId = document.getElementById('peerId').value || `user-${Math.random().toString(36).substr(2, 5)}`;
+                document.getElementById('peerId').value = peerId;
+                
+                ws = new WebSocket('ws://127.0.0.1:8080');
+                
+                ws.onopen = () => {
+                    updateStatus('Connected to signaling server');
+                    const roomId = document.getElementById('roomId').value;
+                    sendSignal({
+                        type: 'Join',
+                        room_id: roomId,
+                        peer_id: peerId
+                    });
+                };
+
+                ws.onmessage = handleSignaling;
+                ws.onerror = err => updateStatus('WebSocket error: ' + err.message, true);
+                ws.onclose = () => updateStatus('Disconnected from server', true);
+
+                // Request audio permissions early
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                document.getElementById('audioStatus').textContent = 'Audio status: Ready';
+            } catch (err) {
+                updateStatus('Error: ' + err.message, true);
+            }
+        }
+
+        function sendSignal(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+            }
+        }
+
+        async function startCall() {
+            try {
+                const roomId = document.getElementById('roomId').value;
+                const peerId = document.getElementById('peerId').value;
+
+                if (!localStream) {
+                    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                }
+
+                peerConnection = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' }
+                    ]
+                });
+
+                localStream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                peerConnection.ontrack = event => {
+                    const audio = new Audio();
+                    audio.srcObject = event.streams[0];
+                    audio.play();
+                };
+
+                peerConnection.onicecandidate = event => {
+                    if (event.candidate) {
+                        sendSignal({
+                            type: 'IceCandidate',
+                            room_id: roomId,
+                            candidate: JSON.stringify(event.candidate),
+                            from_peer: peerId,
+                            to_peer: '*'
+                        });
+                    }
+                };
+
+                // Create and send offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                sendSignal({
+                    type: 'MediaOffer',
+                    room_id: roomId,
+                    sdp: JSON.stringify(offer),
+                    from_peer: peerId,
+                    to_peer: '*',
+                    media_types: ['Audio']
+                });
+
+            } catch (err) {
+                updateStatus('Call error: ' + err.message, true);
+            }
+        }
+
+        async function handleSignaling(event) {
+            const message = JSON.parse(event.data);
+            const roomId = document.getElementById('roomId').value;
+            const peerId = document.getElementById('peerId').value;
+
+            switch (message.type) {
+                case 'PeerList':
+                    document.getElementById('peerList').textContent = 
+                        'Connected peers: ' + message.peers.join(', ');
+                    break;
+
+                case 'MediaOffer':
+                    if (message.to_peer === '*' || message.to_peer === peerId) {
+                        await peerConnection.setRemoteDescription(JSON.parse(message.sdp));
+                        const answer = await peerConnection.createAnswer();
+                        await peerConnection.setLocalDescription(answer);
+                        
+                        sendSignal({
+                            type: 'MediaAnswer',
+                            room_id: roomId,
+                            sdp: JSON.stringify(answer),
+                            from_peer: peerId,
+                            to_peer: message.from_peer,
+                            media_types: ['Audio']
+                        });
+                    }
+                    break;
+
+                case 'MediaAnswer':
+                    if (message.to_peer === '*' || message.to_peer === peerId) {
+                        await peerConnection.setRemoteDescription(JSON.parse(message.sdp));
+                    }
+                    break;
+
+                case 'IceCandidate':
+                    if (message.to_peer === '*' || message.to_peer === peerId) {
+                        await peerConnection.addIceCandidate(JSON.parse(message.candidate));
+                    }
+                    break;
+            }
+        }
+
+        function toggleMute() {
+            if (localStream) {
+                localStream.getAudioTracks().forEach(track => {
+                    track.enabled = isMuted;
+                });
+                isMuted = !isMuted;
+                document.getElementById('muteButton').textContent = isMuted ? 'Unmute' : 'Mute';
+            }
+        }
+
+        function disconnect() {
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            if (ws) {
+                ws.close();
+            }
+            updateStatus('Disconnected');
+        }
+
+        function updateStatus(message, isError = false) {
+            const status = document.getElementById('connectionStatus');
+            status.textContent = message;
+            status.className = 'status ' + (isError ? 'error' : 'success');
+        }
+    </script>
+</body>
+</html>
