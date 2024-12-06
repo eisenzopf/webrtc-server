@@ -42,7 +42,7 @@ pub enum SignalingMessage {
 }
 
 type PeerConnection = (String, WebSocketStream<TcpStream>);
-type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>>;
+type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
 
 pub struct SignalingServer {
     address: String,
@@ -117,32 +117,33 @@ impl SignalingServer {
                         })?,
                     )).await?;
                 },
-                SignalingMessage::Offer { room_id, sdp } => {
+                SignalingMessage::Offer { room_id, sdp, from_peer, to_peer } => {
                     Self::broadcast_to_room(&peers, &room_id, &SignalingMessage::Offer { 
                         room_id: room_id.clone(), 
-                        sdp 
+                        sdp,
+                        from_peer,
+                        to_peer
                     }).await?;
-                }
-
-                SignalingMessage::Answer { room_id, sdp } => {
+                },
+                SignalingMessage::Answer { room_id, sdp, from_peer, to_peer } => {
                     Self::broadcast_to_room(&peers, &room_id, &SignalingMessage::Answer { 
                         room_id: room_id.clone(), 
-                        sdp 
+                        sdp,
+                        from_peer,
+                        to_peer
                     }).await?;
-                }
-
-                SignalingMessage::IceCandidate { room_id, candidate } => {
+                },
+                SignalingMessage::IceCandidate { room_id, candidate, from_peer, to_peer } => {
                     Self::broadcast_to_room(&peers, &room_id, &SignalingMessage::IceCandidate { 
                         room_id: room_id.clone(), 
-                        candidate 
+                        candidate,
+                        from_peer,
+                        to_peer
                     }).await?;
-                }
-
-                SignalingMessage::Leave { room_id } => {
-                    let mut peers_write = peers.write().await;
-                    if let Some(_room_peers) = peers_write.get_mut(&room_id) {
-                        println!("Peer left room: {}", room_id);
-                    }
+                },
+                _ => {
+                    // Optionally log unhandled message types
+                    println!("Received unhandled message type");
                 }
             }
         }
@@ -156,8 +157,8 @@ impl SignalingServer {
             let msg = tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::to_string(&message)?
             );
-            for peer in room_peers.iter_mut() {
-                if let Err(e) = peer.send(msg.clone()).await {
+            for (_, ws_stream) in room_peers.iter_mut() {
+                if let Err(e) = ws_stream.send(msg.clone()).await {
                     eprintln!("Error broadcasting message: {}", e);
                 }
             }
