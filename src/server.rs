@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
+use std::io::{self, Write};
 
 pub struct SignalingServer {
     address: String,
@@ -27,14 +28,20 @@ impl SignalingServer {
         }
     }
 
+    fn log(message: &str) {
+        println!("[SERVER DEBUG] {}", message);
+        io::stdout().flush().unwrap_or_default();
+    }
+
     pub async fn start(&self) -> Result<()> {
+        println!("### SERVER START ###");
         println!("Attempting to bind to {}", self.address);
         let listener = TcpListener::bind(&self.address).await.map_err(|e| {
             eprintln!("Failed to bind to {}: {}", self.address, e);
             anyhow::anyhow!("Failed to bind: {}", e)
         })?;
-        println!("Successfully bound to {}", self.address);
-        println!("Signaling server listening on {}", self.address);
+        println!("### Successfully bound to {} ###", self.address);
+        println!("### Signaling server listening on {} ###", self.address);
 
         let metrics = self.metrics.clone();
         tokio::spawn(async move {
@@ -45,14 +52,14 @@ impl SignalingServer {
         });
 
         while let Ok((stream, addr)) = listener.accept().await {
-            println!("New connection from: {}", addr);
+            println!("### New connection from: {} ###", addr);
             let peers = self.peers.clone();
             let rooms = self.rooms.clone();
             let metrics = self.metrics.clone();
             
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(stream, peers, rooms, metrics).await {
-                    eprintln!("Error handling connection: {}", e);
+                    println!("### Error handling connection: {} ###", e);
                 }
             });
         }
@@ -71,140 +78,134 @@ impl SignalingServer {
         rooms: Arc<RwLock<HashMap<String, Room>>>,
         metrics: Arc<RwLock<HashMap<String, ConnectionMetrics>>>,
     ) -> Result<()> {
+        Self::log("Starting new WebSocket connection handling");
         let ws_stream = accept_async(stream).await?;
+        Self::log("WebSocket connection accepted");
+        
         let (ws_sender, mut ws_receiver) = ws_stream.split();
         let ws_sender = Arc::new(Mutex::new(ws_sender));
         let mut current_peer_id: Option<String> = None;
         let mut current_room_id: Option<String> = None;
 
         while let Some(msg) = ws_receiver.next().await {
-            let msg = msg?;
-            let msg_str = msg.to_text()?;
-            println!("Received message: {}", msg_str);
-            let signal_msg: SignalingMessage = serde_json::from_str(msg_str)?;
+            Self::log("------- New message received -------");
+            match msg {
+                Ok(msg) => {
+                    match msg.to_text() {
+                        Ok(msg_str) => {
+                            Self::log(&format!("Raw message received: {}", msg_str));
+                            match serde_json::from_str::<SignalingMessage>(msg_str) {
+                                Ok(signal_msg) => {
+                                    Self::log(&format!("Successfully parsed message: {:?}", signal_msg));
+                                    // Update metrics for the peer
+                                    if let Some(ref peer_id) = current_peer_id {
+                                        let mut metrics = metrics.write().await;
+                                        metrics
+                                            .entry(peer_id.clone())
+                                            .or_insert_with(|| ConnectionMetrics::new(peer_id.clone()))
+                                            .update_last_seen();
+                                    }
 
-            // Update metrics for the peer
-            if let Some(ref peer_id) = current_peer_id {
-                let mut metrics = metrics.write().await;
-                metrics
-                    .entry(peer_id.clone())
-                    .or_insert_with(|| ConnectionMetrics::new(peer_id.clone()))
-                    .update_last_seen();
-            }
+                                    match signal_msg {
+                                        SignalingMessage::Join { room_id, peer_id } => {
+                                            Self::log(&format!("=== JOIN REQUEST START ==="));
+                                            Self::log(&format!("Received join request - Room: {}, Peer: {}", room_id, peer_id));
+                                            
+                                            // Get or create room and update its peer list
+                                            {
+                                                let mut rooms = rooms.write().await;
+                                                let room = rooms.entry(room_id.clone())
+                                                    .or_insert_with(|| Room {
+                                                        id: room_id.clone(),
+                                                        peers: Vec::new(),
+                                                        media_settings: MediaSettings::default(),
+                                                    });
+                                                
+                                                // Add peer to room's peer list if not already present
+                                                if !room.peers.iter().any(|(id, _)| id == &peer_id) {
+                                                    room.peers.push((peer_id.clone(), ws_sender.clone()));
+                                                }
+                                                Self::log(&format!("Room status - Current peers: {}", room.peers.len()));
+                                            }
 
-            match signal_msg.message_type.as_str() {
-                "Join" => {
-                    if let (Some(room_id), Some(peer_id)) = (signal_msg.room_id, signal_msg.peer_id) {
-                        println!("Received join request - Room: {}, Peer: {}", room_id, peer_id);
-                        let room = Self::get_or_create_room(&rooms, &room_id).await?;
-                        if room.peers.len() >= room.media_settings.max_participants {
-                            let error_msg = SignalingMessage {
-                                message_type: "MediaError".to_string(),
-                                error_type: Some("room_full".to_string()),
-                                description: Some("Room has reached maximum capacity".to_string()),
-                                peer_id: Some(peer_id.clone()),
-                                ..Default::default()
-                            };
-                            let mut sender = ws_sender.lock().await;
-                            sender.send(Message::Text(serde_json::to_string(&error_msg)?)).await?;
-                            continue;
+                                            current_peer_id = Some(peer_id.clone());
+                                            current_room_id = Some(room_id.clone());
+                                            Self::log(&format!("=== JOIN REQUEST END ==="));
+
+                                            // Update peer map and broadcast to all peers
+                                            {
+                                                let mut peers_write = peers.write().await;
+                                                let room_peers = peers_write.entry(room_id.clone()).or_insert_with(Vec::new);
+                                                
+                                                // Add the new peer if not already present
+                                                if !room_peers.iter().any(|(id, _)| id == &peer_id) {
+                                                    room_peers.push((peer_id.clone(), ws_sender.clone()));
+                                                }
+
+                                                // Get updated peer list
+                                                let updated_peer_list = room_peers
+                                                    .iter()
+                                                    .map(|(id, _)| id.clone())
+                                                    .collect::<Vec<_>>();
+
+                                                Self::log(&format!("Current peers in room: {:?}", updated_peer_list));
+                                                Self::log("Creating peer list message...");
+
+                                                let peer_list_msg = SignalingMessage::PeerList {
+                                                    peers: updated_peer_list.clone(),
+                                                };
+
+                                                // First send to the new peer
+                                                {
+                                                    let mut sender = ws_sender.lock().await;
+                                                    Self::log(&format!("Sending direct message to new peer {}", peer_id));
+                                                    sender.send(Message::Text(serde_json::to_string(&peer_list_msg)?)).await?;
+                                                }
+
+                                                // Then broadcast to all peers in the room
+                                                Self::log(&format!("Broadcasting updated peer list to all peers in room {}", room_id));
+                                                for (peer_id, sender) in room_peers.iter() {
+                                                    let mut sender = sender.lock().await;
+                                                    Self::log(&format!("Sending peer list to {}", peer_id));
+                                                    sender.send(Message::Text(serde_json::to_string(&peer_list_msg)?)).await?;
+                                                }
+                                            }
+                                        },
+                                        SignalingMessage::Offer { ref room_id, ref sdp, ref from_peer, ref to_peer } => {
+                                            Self::broadcast_to_room(&peers, &room_id, &signal_msg).await?;
+                                        },
+                                        SignalingMessage::Answer { ref room_id, ref sdp, ref from_peer, ref to_peer } => {
+                                            Self::broadcast_to_room(&peers, &room_id, &signal_msg).await?;
+                                        },
+                                        SignalingMessage::IceCandidate { ref room_id, ref candidate, ref from_peer, ref to_peer } => {
+                                            Self::broadcast_to_room(&peers, &room_id, &signal_msg).await?;
+                                        },
+                                        _ => {
+                                            Self::log(&format!("Received unhandled message type: {:?}", signal_msg));
+                                            if let Some(ref room_id) = current_room_id {
+                                                Self::broadcast_to_room(&peers, room_id, &signal_msg).await?;
+                                            }
+                                        }
+                                    }
+                                },
+                                Err(e) => {
+                                    eprintln!("Failed to parse message as SignalingMessage: {}", e);
+                                    eprintln!("Problematic message: {}", msg_str);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to convert message to text: {}", e);
                         }
-
-                        current_peer_id = Some(peer_id.clone());
-                        current_room_id = Some(room_id.clone());
-
-                        let mut peers_write = peers.write().await;
-                        let room_peers = peers_write.entry(room_id.clone()).or_insert_with(Vec::new);
-                        
-                        // Get list of peer IDs before adding the new peer
-                        let peer_list = room_peers
-                            .iter()
-                            .map(|(id, _)| id.clone())
-                            .collect::<Vec<_>>();
-
-                        // Add the new peer
-                        room_peers.push((peer_id.clone(), ws_sender.clone()));
-
-                        // Create peer list message with all peers (including the new one)
-                        let updated_peer_list = room_peers
-                            .iter()
-                            .map(|(id, _)| id.clone())
-                            .collect::<Vec<_>>();
-
-                        println!("Current peers in room: {:?}", updated_peer_list);
-
-                        let peer_list_msg = SignalingMessage {
-                            message_type: "PeerList".to_string(),
-                            peers: Some(updated_peer_list),
-                            room_id: Some(room_id.clone()),
-                            ..Default::default()
-                        };
-
-                        println!("Sending peer list message: {}", serde_json::to_string(&peer_list_msg)?);
-
-                        // Send directly to the new peer first
-                        {
-                            let mut sender = ws_sender.lock().await;
-                            sender.send(Message::Text(serde_json::to_string(&peer_list_msg)?)).await?;
-                        }
-
-                        // Then broadcast to all peers
-                        Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
                     }
-                }
-                "MediaOffer" => {
-                    if let (Some(room_id), Some(from_peer), Some(to_peer), Some(sdp), Some(media_types)) = (
-                        signal_msg.room_id.as_ref(),
-                        signal_msg.from_peer.as_ref(),
-                        signal_msg.to_peer.as_ref(),
-                        signal_msg.sdp.as_ref(),
-                        signal_msg.media_types.as_ref(),
-                    ) {
-                        Self::broadcast_to_room(
-                            &peers,
-                            &room_id,
-                            &signal_msg,
-                        ).await?;
-                    }
-                }
-                "MediaAnswer" => {
-                    if let (Some(room_id), Some(from_peer), Some(to_peer), Some(sdp)) = (
-                        signal_msg.room_id.as_ref(),
-                        signal_msg.from_peer.as_ref(),
-                        signal_msg.to_peer.as_ref(),
-                        signal_msg.sdp.as_ref(),
-                    ) {
-                        Self::broadcast_to_room(
-                            &peers,
-                            &room_id,
-                            &signal_msg,
-                        ).await?;
-                    }
-                }
-                "IceCandidate" => {
-                    if let (Some(room_id), Some(from_peer), Some(to_peer), Some(candidate)) = (
-                        signal_msg.room_id.as_ref(),
-                        signal_msg.from_peer.as_ref(),
-                        signal_msg.to_peer.as_ref(),
-                        signal_msg.candidate.as_ref(),
-                    ) {
-                        Self::broadcast_to_room(
-                            &peers,
-                            &room_id,
-                            &signal_msg,
-                        ).await?;
-                    }
-                }
-                _ => {
-                    println!("Received unhandled message type: {}", signal_msg.message_type);
-                    // Optionally broadcast unhandled messages to room
-                    if let Some(ref room_id) = current_room_id {
-                        Self::broadcast_to_room(&peers, room_id, &signal_msg).await?;
-                    }
+                },
+                Err(e) => {
+                    eprintln!("Error receiving WebSocket message: {}", e);
                 }
             }
         }
 
+        Self::log("WebSocket connection closed");
         // Cleanup when connection closes
         if let (Some(room_id), Some(peer_id)) = (current_room_id, current_peer_id) {
             let mut peers_write = peers.write().await;
@@ -215,10 +216,8 @@ impl SignalingServer {
                     .map(|(id, _)| id.clone())
                     .collect::<Vec<_>>();
 
-                let peer_list_msg = SignalingMessage {
-                    message_type: "PeerList".to_string(),
-                    peers: Some(peer_list),
-                    ..Default::default()
+                let peer_list_msg = SignalingMessage::PeerList {
+                    peers: peer_list,
                 };
 
                 Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
@@ -235,13 +234,17 @@ impl SignalingServer {
     ) -> Result<()> {
         let peers_read = peers.read().await;
         if let Some(room_peers) = peers_read.get(room_id) {
+            Self::log(&format!("Broadcasting to {} peers in room {}", room_peers.len(), room_id));
             let msg = Message::Text(serde_json::to_string(message)?);
-            for (_, sender) in room_peers {
+            for (peer_id, sender) in room_peers {
+                Self::log(&format!("Sending to peer: {}", peer_id));
                 let mut guard = sender.lock().await;
                 if let Err(e) = guard.send(msg.clone()).await {
-                    eprintln!("Error broadcasting message: {}", e);
+                    eprintln!("Error broadcasting message to peer {}: {}", peer_id, e);
                 }
             }
+        } else {
+            Self::log(&format!("No peers found in room {}", room_id));
         }
         Ok(())
     }

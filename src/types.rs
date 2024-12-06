@@ -16,18 +16,43 @@ pub enum MediaType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignalingMessage {
-    pub message_type: String,
-    pub room_id: Option<String>,
-    pub peer_id: Option<String>,
-    pub sdp: Option<String>,
-    pub candidate: Option<String>,
-    pub from_peer: Option<String>,
-    pub to_peer: Option<String>,
-    pub media_types: Option<Vec<MediaType>>,
-    pub error_type: Option<String>,
-    pub description: Option<String>,
-    pub peers: Option<Vec<String>>,
+#[serde(tag = "message_type")]
+pub enum SignalingMessage {
+    Join {
+        room_id: String,
+        peer_id: String,
+    },
+    PeerList {
+        peers: Vec<String>,
+    },
+    Offer {
+        room_id: String,
+        sdp: String,
+        from_peer: String,
+        to_peer: String,
+    },
+    Answer {
+        room_id: String,
+        sdp: String,
+        from_peer: String,
+        to_peer: String,
+    },
+    IceCandidate {
+        room_id: String,
+        candidate: String,
+        from_peer: String,
+        to_peer: String,
+    },
+    RequestPeerList,
+    InitiateCall {
+        peer_id: String,
+        room_id: String,
+    },
+    MediaError {
+        error_type: String,
+        description: String,
+        peer_id: String,
+    }
 }
 
 pub type PeerConnection = (String, Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>);
@@ -35,18 +60,8 @@ pub type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
 
 impl Default for SignalingMessage {
     fn default() -> Self {
-        Self {
-            message_type: String::new(),
-            room_id: None,
-            peer_id: None,
-            sdp: None,
-            candidate: None,
-            from_peer: None,
-            to_peer: None,
-            media_types: None,
-            error_type: None,
-            description: None,
-            peers: None,
+        SignalingMessage::PeerList { 
+            peers: Vec::new() 
         }
     }
 }

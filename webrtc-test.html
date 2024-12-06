@@ -102,38 +102,83 @@
                     const roomId = document.getElementById('roomId').value;
                     const peerId = document.getElementById('peerId').value;
                     const joinMessage = {
-                        Join: {
-                            room_id: roomId,
-                            peer_id: peerId
-                        }
+                        message_type: 'Join',
+                        room_id: roomId,
+                        peer_id: peerId
                     };
                     console.log('Sending join message:', joinMessage);
                     ws.send(JSON.stringify(joinMessage));
                 };
 
-                ws.onmessage = (event) => {
+                ws.onmessage = async (event) => {
                     try {
                         console.log("Raw message received:", event.data);
                         const message = JSON.parse(event.data);
                         console.log("Parsed message:", message);
                         
-                        // Handle PeerList message specifically
-                        if (message.message_type === "PeerList" && message.peers) {
-                            console.log("Received peer list:", message.peers);
-                            const peerListDiv = document.getElementById('peerList');
-                            if (message.peers.length > 0) {
+                        switch (message.message_type) {
+                            case "PeerList":
+                                console.log("Received peer list:", message.peers);
                                 const currentPeerId = document.getElementById('peerId').value;
                                 const otherPeers = message.peers.filter(p => p !== currentPeerId);
+                                const peerListDiv = document.getElementById('peerList');
+                                
                                 if (otherPeers.length > 0) {
                                     peerListDiv.textContent = 'Connected peers: ' + otherPeers.join(', ');
                                     peerListDiv.className = 'status success';
                                 } else {
                                     peerListDiv.textContent = 'No other peers connected';
+                                    peerListDiv.className = 'status';
                                 }
-                            }
+                                break;
+
+                            case "Offer":
+                                console.log("Received offer from:", message.from_peer);
+                                if (!peerConnection) {
+                                    await setupPeerConnection();
+                                }
+                                
+                                await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                                    type: 'offer',
+                                    sdp: JSON.parse(message.sdp)
+                                }));
+                                
+                                const answer = await peerConnection.createAnswer();
+                                await peerConnection.setLocalDescription(answer);
+                                
+                                sendSignal('Answer', {
+                                    room_id: document.getElementById('roomId').value,
+                                    sdp: JSON.stringify(answer),
+                                    from_peer: document.getElementById('peerId').value,
+                                    to_peer: message.from_peer
+                                });
+                                break;
+
+                            case "Answer":
+                                console.log("Received answer from:", message.from_peer);
+                                if (peerConnection) {
+                                    await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                                        type: 'answer',
+                                        sdp: JSON.parse(message.sdp)
+                                    }));
+                                }
+                                break;
+
+                            case "IceCandidate":
+                                console.log("Received ICE candidate from:", message.from_peer);
+                                if (peerConnection && peerConnection.remoteDescription) {
+                                    try {
+                                        await peerConnection.addIceCandidate(
+                                            new RTCIceCandidate(JSON.parse(message.candidate))
+                                        );
+                                    } catch (e) {
+                                        console.error("Error adding received ICE candidate:", e);
+                                    }
+                                }
+                                break;
                         }
                     } catch (err) {
-                        console.error('Failed to parse WebSocket message:', err);
+                        console.error('Failed to process WebSocket message:', err);
                         console.log("Raw message that failed:", event.data);
                     }
                 };
@@ -174,30 +219,31 @@
             try {
                 const roomId = document.getElementById('roomId').value;
                 const peerId = document.getElementById('peerId').value;
-                const peerListText = document.getElementById('peerList').textContent;
-                console.log('Starting call. Current peer list:', peerListText);
+                const peerListDiv = document.getElementById('peerList');
+                const peerListText = peerListDiv.textContent;
                 
-                const peers = peerListText.includes('Connected peers: ') 
+                const otherPeers = peerListText.includes('Connected peers: ') 
                     ? peerListText.replace('Connected peers: ', '').split(', ')
                     : [];
                 
-                console.log('Found peers to call:', peers);
+                console.log('Found peers to call:', otherPeers);
                 
-                if (peers.length === 0) {
+                if (otherPeers.length === 0) {
                     updateStatus('No other peers to call', true);
                     return;
                 }
 
-                await setupPeerConnection();
+                if (!peerConnection) {
+                    await setupPeerConnection();
+                }
 
                 // Create and send offer to each peer
-                for (const targetPeer of peers) {
+                for (const targetPeer of otherPeers) {
                     console.log('Creating offer for peer:', targetPeer);
                     const offer = await peerConnection.createOffer();
                     await peerConnection.setLocalDescription(offer);
                     
-                    console.log('Sending offer to peer:', targetPeer);
-                    sendSignal('MediaOffer', {
+                    sendSignal('Offer', {
                         room_id: roomId,
                         sdp: JSON.stringify(offer),
                         from_peer: peerId,
@@ -286,16 +332,8 @@
                 ]
             });
 
-            localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
-            });
-
-            peerConnection.ontrack = event => {
-                console.log('Received remote track');
-                const audio = new Audio();
-                audio.srcObject = event.streams[0];
-                audio.play();
-            };
+            // Store ICE candidates that arrive before the remote description
+            let iceCandidatesQueue = [];
 
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
@@ -309,6 +347,20 @@
                     });
                 }
             };
+
+            peerConnection.ontrack = event => {
+                console.log('Received remote track');
+                const audio = new Audio();
+                audio.srcObject = event.streams[0];
+                audio.play().catch(e => console.error('Error playing audio:', e));
+            };
+
+            // Add local stream tracks to the connection
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            return peerConnection;
         }
 
         function toggleMute() {
