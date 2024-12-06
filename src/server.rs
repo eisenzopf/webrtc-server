@@ -115,19 +115,40 @@ impl SignalingServer {
 
                         let mut peers_write = peers.write().await;
                         let room_peers = peers_write.entry(room_id.clone()).or_insert_with(Vec::new);
+                        
+                        // Get list of peer IDs before adding the new peer
                         let peer_list = room_peers
                             .iter()
                             .map(|(id, _)| id.clone())
                             .collect::<Vec<_>>();
 
+                        // Add the new peer
                         room_peers.push((peer_id.clone(), ws_sender.clone()));
+
+                        // Create peer list message with all peers (including the new one)
+                        let updated_peer_list = room_peers
+                            .iter()
+                            .map(|(id, _)| id.clone())
+                            .collect::<Vec<_>>();
+
+                        println!("Current peers in room: {:?}", updated_peer_list);
 
                         let peer_list_msg = SignalingMessage {
                             message_type: "PeerList".to_string(),
-                            peers: Some(peer_list),
+                            peers: Some(updated_peer_list),
+                            room_id: Some(room_id.clone()),
                             ..Default::default()
                         };
 
+                        println!("Sending peer list message: {}", serde_json::to_string(&peer_list_msg)?);
+
+                        // Send directly to the new peer first
+                        {
+                            let mut sender = ws_sender.lock().await;
+                            sender.send(Message::Text(serde_json::to_string(&peer_list_msg)?)).await?;
+                        }
+
+                        // Then broadcast to all peers
                         Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
                     }
                 }
