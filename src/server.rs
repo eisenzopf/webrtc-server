@@ -112,7 +112,31 @@ impl SignalingServer {
         let mut current_peer_id: Option<String> = None;
         let mut current_room_id: Option<String> = None;
 
-        while let Some(msg) = ws_receiver.next().await {
+        // Create a heartbeat channel
+        let (heartbeat_tx, mut heartbeat_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let heartbeat_ws_sender = ws_sender.clone();
+        
+        // Spawn heartbeat task
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let mut sender = heartbeat_ws_sender.lock().await;
+                if sender.send(Message::Ping(vec![])).await.is_err() {
+                    let _ = heartbeat_tx.send(()).await;
+                    break;
+                }
+            }
+        });
+
+        while let Some(msg) = tokio::select! {
+            msg = ws_receiver.next() => msg,
+            _ = heartbeat_rx.recv() => {
+                // Heartbeat failed, clean up and exit
+                Self::cleanup_peer(&current_peer_id, &current_room_id, &peers, &rooms).await?;
+                return Ok(());
+            }
+        } {
             Self::log("------- New message received -------").await;
             match msg {
                 Ok(msg) => {
@@ -218,45 +242,12 @@ impl SignalingServer {
                                         },
                                         SignalingMessage::Disconnect { room_id, peer_id } => {
                                             Self::log(&format!("=== DISCONNECT REQUEST START ===")).await;
-                                            Self::log(&format!("Received disconnect request - Room: {}, Peer: {}", room_id, peer_id)).await;
-                                            
-                                            // Clean up room and peer mappings
-                                            {
-                                                let mut rooms = rooms.write().await;
-                                                if let Some(room) = rooms.get_mut(&room_id) {
-                                                    room.peers.retain(|(id, _)| id != &peer_id);
-                                                    Self::log(&format!("Updated room peers - Remaining: {}", room.peers.len())).await;
-                                                    
-                                                    // Remove room if empty
-                                                    if room.peers.is_empty() {
-                                                        rooms.remove(&room_id);
-                                                        Self::log("Room removed as it's now empty").await;
-                                                    }
-                                                }
-                                            }
-                                            
-                                            // Update peer map
-                                            {
-                                                let mut peers_write = peers.write().await;
-                                                if let Some(room_peers) = peers_write.get_mut(&room_id) {
-                                                    room_peers.retain(|(id, _)| id != &peer_id);
-                                                    
-                                                    // Broadcast updated peer list to remaining peers
-                                                    let updated_peer_list = room_peers
-                                                        .iter()
-                                                        .map(|(id, _)| id.clone())
-                                                        .collect::<Vec<_>>();
-                                                    
-                                                    let peer_list_msg = SignalingMessage::PeerList {
-                                                        peers: updated_peer_list.clone(),
-                                                    };
-                                                    
-                                                    Self::log(&format!("Broadcasting updated peer list: {:?}", updated_peer_list)).await;
-                                                    Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
-                                                }
-                                            }
-                                            
+                                            Self::cleanup_peer(&Some(peer_id), &Some(room_id), &peers, &rooms).await?;
                                             Self::log("=== DISCONNECT REQUEST END ===").await;
+                                            
+                                            // Clear current peer state
+                                            current_peer_id = None;
+                                            current_room_id = None;
                                         },
                                         _ => {
                                             Self::log(&format!("Received unhandled message type: {:?}", signal_msg)).await;
@@ -283,25 +274,53 @@ impl SignalingServer {
             }
         }
 
-        Self::log("WebSocket connection closed").await;
-        // Cleanup when connection closes
-        if let (Some(room_id), Some(peer_id)) = (current_room_id, current_peer_id) {
-            let mut peers_write = peers.write().await;
-            if let Some(room_peers) = peers_write.get_mut(&room_id) {
-                room_peers.retain(|(id, _)| id != &peer_id);
-                let peer_list = room_peers
-                    .iter()
-                    .map(|(id, _)| id.clone())
-                    .collect::<Vec<_>>();
+        // Clean up when connection closes
+        Self::cleanup_peer(&current_peer_id, &current_room_id, &peers, &rooms).await?;
+        Ok(())
+    }
 
-                let peer_list_msg = SignalingMessage::PeerList {
-                    peers: peer_list,
-                };
+    async fn cleanup_peer(
+        peer_id: &Option<String>,
+        room_id: &Option<String>,
+        peers: &PeerMap,
+        rooms: &Arc<RwLock<HashMap<String, Room>>>,
+    ) -> Result<(), anyhow::Error> {
+        if let (Some(peer_id), Some(room_id)) = (peer_id, room_id) {
+            Self::log(&format!("Cleaning up peer {} from room {}", peer_id, room_id)).await;
+            
+            // Remove from rooms
+            {
+                let mut rooms = rooms.write().await;
+                if let Some(room) = rooms.get_mut(room_id) {
+                    room.peers.retain(|(id, _)| id != peer_id);
+                    
+                    // Remove empty room
+                    if room.peers.is_empty() {
+                        rooms.remove(room_id);
+                    }
+                }
+            }
 
-                Self::broadcast_to_room(&peers, &room_id, &peer_list_msg).await?;
+            // Remove from peers and broadcast update
+            {
+                let mut peers_write = peers.write().await;
+                if let Some(room_peers) = peers_write.get_mut(room_id) {
+                    room_peers.retain(|(id, _)| id != peer_id);
+                    
+                    // Get updated peer list
+                    let peer_list = room_peers
+                        .iter()
+                        .map(|(id, _)| id.clone())
+                        .collect::<Vec<_>>();
+
+                    // Broadcast update
+                    let peer_list_msg = SignalingMessage::PeerList {
+                        peers: peer_list,
+                    };
+                    Self::broadcast_to_room(peers, room_id, &peer_list_msg).await?;
+                }
             }
         }
-
         Ok(())
     }
 

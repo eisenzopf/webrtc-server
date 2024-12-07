@@ -112,6 +112,12 @@
 
                 ws.onmessage = async (event) => {
                     try {
+                        // Check if it's a text message
+                        if (typeof event.data !== 'string') {
+                            console.log("Received non-text message, ignoring");
+                            return;
+                        }
+
                         console.log("Raw message received:", event.data);
                         const message = JSON.parse(event.data);
                         console.log("Parsed message:", message);
@@ -213,11 +219,20 @@
                 };
                 ws.onerror = (error) => {
                     console.error('WebSocket error:', error);
-                    updateStatus('WebSocket error: ' + error.message, true);
+                    updateStatus('WebSocket error occurred', true);
                 };
-                ws.onclose = () => {
-                    console.log('WebSocket connection closed');
-                    updateStatus('Disconnected from server', true);
+                ws.onclose = (event) => {
+                    console.log('WebSocket connection closed:', event.code, event.reason);
+                    updateStatus('Connection closed');
+                    // Clean up resources
+                    if (peerConnection) {
+                        peerConnection.close();
+                        peerConnection = null;
+                    }
+                    if (localStream) {
+                        localStream.getTracks().forEach(track => track.stop());
+                        localStream = null;
+                    }
                 };
 
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -421,21 +436,35 @@
                         room_id: roomId,
                         peer_id: peerId
                     });
-                }
+                    
+                    // Wait for the disconnect message to be sent before closing
+                    setTimeout(() => {
+                        if (peerConnection) {
+                            peerConnection.close();
+                            peerConnection = null;
+                        }
 
-                if (peerConnection) {
-                    peerConnection.close();
-                    peerConnection = null;
-                }
+                        if (localStream) {
+                            localStream.getTracks().forEach(track => track.stop());
+                            localStream = null;
+                        }
 
-                if (localStream) {
-                    localStream.getTracks().forEach(track => track.stop());
-                    localStream = null;
-                }
+                        if (ws) {
+                            ws.close();
+                            ws = null;
+                        }
+                    }, 100);
+                } else {
+                    // Clean up if WebSocket is already closed
+                    if (peerConnection) {
+                        peerConnection.close();
+                        peerConnection = null;
+                    }
 
-                if (ws) {
-                    ws.close();
-                    ws = null;
+                    if (localStream) {
+                        localStream.getTracks().forEach(track => track.stop());
+                        localStream = null;
+                    }
                 }
 
                 updateStatus('Disconnected');
