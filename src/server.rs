@@ -142,6 +142,12 @@ impl SignalingServer {
                 Ok(msg) => {
                     match msg.to_text() {
                         Ok(msg_str) => {
+                            // Add check for empty messages
+                            if msg_str.trim().is_empty() {
+                                Self::log("Received empty message - ignoring").await;
+                                continue;
+                            }
+
                             Self::log(&format!("Raw message received: {}", msg_str)).await;
                             match serde_json::from_str::<SignalingMessage>(msg_str) {
                                 Ok(signal_msg) => {
