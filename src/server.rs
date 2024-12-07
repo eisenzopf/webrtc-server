@@ -19,7 +19,6 @@ use crate::metrics::ConnectionMetrics;
 use tokio::sync::Mutex;
 use tokio_tungstenite::accept_async;
 use tokio::net::TcpStream;
-use std::time::Duration;
 use futures_util::SinkExt;
 use futures_util::StreamExt;
 use tokio::net::TcpListener;
@@ -29,6 +28,7 @@ use tokio_tungstenite::tungstenite::Message;
 use webrtc::track::track_local::TrackLocalWriter;
 use std::any::Any;
 use webrtc::util::Marshal;
+use tokio::time::{Duration, interval};
 
 #[derive(Clone)]
 pub struct SignalingServer {
@@ -59,18 +59,20 @@ impl SignalingServer {
     pub async fn start(&self) -> Result<(), anyhow::Error> {
         println!("### SERVER START ###");
         println!("Attempting to bind to {}", self.address);
-        let listener = TcpListener::bind(&self.address).await.map_err(|e| {
-            eprintln!("Failed to bind to {}: {}", self.address, e);
-            anyhow::anyhow!("Failed to bind: {}", e)
-        })?;
+        let listener = TcpListener::bind(&self.address).await?;
         println!("### Successfully bound to {} ###", self.address);
         println!("### Signaling server listening on {} ###", self.address);
 
-        let metrics = self.metrics.clone();
+        // Start the connection health checker
+        let peers = self.peers.clone();
+        let rooms = self.rooms.clone();
         tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(30)); // Check every 30 seconds
             loop {
-                Self::cleanup_stale_metrics(&metrics).await;
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                interval.tick().await;
+                if let Err(e) = Self::check_connections(&peers, &rooms).await {
+                    eprintln!("Error checking connections: {}", e);
+                }
             }
         });
 
@@ -91,9 +93,79 @@ impl SignalingServer {
         Ok(())
     }
 
-    async fn cleanup_stale_metrics(metrics: &Arc<RwLock<HashMap<String, ConnectionMetrics>>>) {
-        let mut metrics = metrics.write().await;
-        metrics.retain(|_, v| v.last_seen.elapsed() < Duration::from_secs(300));
+    async fn check_connections(
+        peers: &PeerMap,
+        rooms: &Arc<RwLock<HashMap<String, Room>>>,
+    ) -> Result<(), anyhow::Error> {
+        Self::log("Starting connection health check").await;
+        let mut disconnected_peers = Vec::new();
+
+        // Check each room and peer
+        let peers_read = peers.read().await;
+        for (room_id, room_peers) in peers_read.iter() {
+            for (peer_id, sender) in room_peers {
+                // Try to send a ping message
+                let mut sender = sender.lock().await;
+                if let Err(_) = sender.send(Message::Ping(vec![])).await {
+                    disconnected_peers.push((room_id.clone(), peer_id.clone()));
+                    Self::log(&format!("Peer {} in room {} is unresponsive", peer_id, room_id)).await;
+                }
+            }
+        }
+        drop(peers_read);  // Release the read lock
+
+        // Clean up disconnected peers
+        if !disconnected_peers.is_empty() {
+            Self::log(&format!("Found {} disconnected peers to clean up", disconnected_peers.len())).await;
+            let mut peers_write = peers.write().await;
+            let mut rooms_write = rooms.write().await;
+
+            for (room_id, peer_id) in disconnected_peers {
+                // Remove from peers map
+                if let Some(room_peers) = peers_write.get_mut(&room_id) {
+                    room_peers.retain(|(id, _)| id != &peer_id);
+                }
+
+                // Remove from room
+                if let Some(room) = rooms_write.get_mut(&room_id) {
+                    room.peers.retain(|(id, _)| id != &peer_id);
+
+                    // Get updated peer list
+                    let peer_list: Vec<String> = room.peers.iter()
+                        .map(|(id, _)| id.clone())
+                        .collect::<Vec<_>>();
+
+                    // Broadcast updated peer list to remaining peers
+                    if !peer_list.is_empty() {
+                        let peer_list_msg = SignalingMessage::PeerList {
+                            peers: peer_list.clone(),
+                        };
+                        
+                        // Convert to JSON once
+                        if let Ok(msg_str) = serde_json::to_string(&peer_list_msg) {
+                            for (_, sender) in &room.peers {
+                                let mut sender_guard = sender.lock().await;
+                                if let Err(e) = sender_guard.send(Message::Text(msg_str.clone())).await {
+                                    eprintln!("Failed to send message: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Remove empty rooms
+                if let Some(room) = rooms_write.get(&room_id) {
+                    if room.peers.is_empty() {
+                        rooms_write.remove(&room_id);
+                        Self::log(&format!("Removed empty room {}", room_id)).await;
+                    }
+                }
+            }
+        } else {
+            Self::log("All connections are healthy").await;
+        }
+
+        Ok(())
     }
 
     async fn handle_connection(

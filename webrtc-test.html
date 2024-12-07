@@ -87,6 +87,13 @@
         let peerConnection;
         let localStream;
         let isMuted = false;
+        let isDisconnecting = false;
+
+        window.addEventListener('beforeunload', () => {
+            if (!isDisconnecting) {
+                disconnect();
+            }
+        });
 
         async function connect() {
             try {
@@ -224,14 +231,24 @@
                 ws.onclose = (event) => {
                     console.log('WebSocket connection closed:', event.code, event.reason);
                     updateStatus('Connection closed');
-                    // Clean up resources
-                    if (peerConnection) {
-                        peerConnection.close();
-                        peerConnection = null;
-                    }
-                    if (localStream) {
-                        localStream.getTracks().forEach(track => track.stop());
-                        localStream = null;
+                    
+                    if (!isDisconnecting) {
+                        if (peerConnection) {
+                            peerConnection.close();
+                            peerConnection = null;
+                        }
+                        if (localStream) {
+                            localStream.getTracks().forEach(track => track.stop());
+                            localStream = null;
+                        }
+                        const roomId = document.getElementById('roomId').value;
+                        const peerId = document.getElementById('peerId').value;
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            sendSignal('Disconnect', {
+                                room_id: roomId,
+                                peer_id: peerId
+                            });
+                        }
                     }
                 };
 
@@ -428,6 +445,7 @@
 
         function disconnect() {
             try {
+                isDisconnecting = true;
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     const roomId = document.getElementById('roomId').value;
                     const peerId = document.getElementById('peerId').value;
@@ -436,35 +454,21 @@
                         room_id: roomId,
                         peer_id: peerId
                     });
-                    
-                    // Wait for the disconnect message to be sent before closing
-                    setTimeout(() => {
-                        if (peerConnection) {
-                            peerConnection.close();
-                            peerConnection = null;
-                        }
+                }
 
-                        if (localStream) {
-                            localStream.getTracks().forEach(track => track.stop());
-                            localStream = null;
-                        }
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
 
-                        if (ws) {
-                            ws.close();
-                            ws = null;
-                        }
-                    }, 100);
-                } else {
-                    // Clean up if WebSocket is already closed
-                    if (peerConnection) {
-                        peerConnection.close();
-                        peerConnection = null;
-                    }
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                    localStream = null;
+                }
 
-                    if (localStream) {
-                        localStream.getTracks().forEach(track => track.stop());
-                        localStream = null;
-                    }
+                if (ws) {
+                    ws.close();
+                    ws = null;
                 }
 
                 updateStatus('Disconnected');
