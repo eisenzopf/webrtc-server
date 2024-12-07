@@ -1,3 +1,4 @@
+#![allow(warnings)]
 mod metrics;
 mod room;
 mod server;
