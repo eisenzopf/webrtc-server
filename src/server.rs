@@ -364,9 +364,7 @@ impl SignalingServer {
         rooms: &Arc<RwLock<HashMap<String, Room>>>,
     ) -> Result<(), anyhow::Error> {
         if let (Some(peer_id), Some(room_id)) = (peer_id, room_id) {
-            Self::log(&format!("Cleaning up peer {} from room {}", peer_id, room_id)).await;
-            
-            // Remove from rooms
+            // Remove from rooms first
             {
                 let mut rooms = rooms.write().await;
                 if let Some(room) = rooms.get_mut(room_id) {
@@ -379,23 +377,16 @@ impl SignalingServer {
                 }
             }
 
-            // Remove from peers and broadcast update
+            // Remove from peers map
             {
                 let mut peers_write = peers.write().await;
                 if let Some(room_peers) = peers_write.get_mut(room_id) {
+                    // Remove all instances of this peer ID
                     room_peers.retain(|(id, _)| id != peer_id);
                     
-                    // Get updated peer list
-                    let peer_list = room_peers
-                        .iter()
-                        .map(|(id, _)| id.clone())
-                        .collect::<Vec<_>>();
-
-                    // Broadcast update
-                    let peer_list_msg = SignalingMessage::PeerList {
-                        peers: peer_list,
-                    };
-                    Self::broadcast_to_room(peers, room_id, &peer_list_msg).await?;
+                    if room_peers.is_empty() {
+                        peers_write.remove(room_id);
+                    }
                 }
             }
         }
