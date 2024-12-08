@@ -70,6 +70,7 @@
         </div>
         <button onclick="connect()">Connect to Server</button>
         <button onclick="startCall()">Start Call</button>
+        <button onclick="endCall()">End Call</button>
         <button onclick="disconnect()">Disconnect</button>
     </div>
 
@@ -216,6 +217,19 @@
                                     }
                                 } else {
                                     console.log("Ignoring ICE candidate - no peer connection or remote description");
+                                }
+                                break;
+
+                            case "EndCall":
+                                if (peerConnection) {
+                                    peerConnection.close();
+                                    peerConnection = null;
+                                    if (localStream) {
+                                        localStream.getTracks().forEach(track => track.stop());
+                                        localStream = null;
+                                    }
+                                    updateStatus('Call ended by peer');
+                                    document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
                                 }
                                 break;
                         }
@@ -506,6 +520,38 @@
             const status = document.getElementById('connectionStatus');
             status.textContent = message;
             status.className = 'status ' + (isError ? 'error' : 'success');
+        }
+
+        async function endCall() {
+            try {
+                if (peerConnection) {
+                    // Close the peer connection
+                    peerConnection.close();
+                    peerConnection = null;
+
+                    // Stop local stream tracks
+                    if (localStream) {
+                        localStream.getTracks().forEach(track => track.stop());
+                        localStream = null;
+                    }
+
+                    // Send end call signal to the server
+                    const roomId = document.getElementById('roomId').value;
+                    const peerId = document.getElementById('peerId').value;
+                    sendSignal('EndCall', {
+                        room_id: roomId,
+                        peer_id: peerId
+                    });
+
+                    updateStatus('Call ended');
+                    document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
+                } else {
+                    updateStatus('No active call to end');
+                }
+            } catch (err) {
+                console.error('Error ending call:', err);
+                updateStatus('Error ending call: ' + err.message, true);
+            }
         }
     </script>
 </body>

@@ -1,3 +1,4 @@
+#![allow(warnings)]
 pub mod signaling;
 pub mod room;
 pub mod media;

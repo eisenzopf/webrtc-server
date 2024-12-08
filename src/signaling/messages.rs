@@ -41,7 +41,11 @@ pub enum SignalingMessage {
         error_type: String,
         description: String,
         peer_id: String,
-    }
+    },
+    EndCall {
+        room_id: String,
+        peer_id: String,
+    },
 }
 
 impl Default for SignalingMessage {

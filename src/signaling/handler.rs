@@ -98,6 +98,26 @@ impl MessageHandler {
                 }
                 Ok(())
             },
+            SignalingMessage::EndCall { room_id, peer_id } => {
+                // Notify other peers in the room about the ended call
+                let peers = self.peers.read().await;
+                if let Some(room_peers) = peers.get(&room_id) {
+                    for (other_peer_id, sender) in room_peers {
+                        if other_peer_id != &peer_id {
+                            let end_call_msg = SignalingMessage::PeerList {
+                                peers: room_peers.iter()
+                                    .map(|(id, _)| id.clone())
+                                    .collect()
+                            };
+                            let mut sender = sender.lock().await;
+                            if let Ok(msg) = serde_json::to_string(&end_call_msg) {
+                                let _ = sender.send(Message::Text(msg)).await;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            },
             _ => Ok(()),
         }
     }
