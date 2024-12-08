@@ -261,18 +261,24 @@
 
         function sendSignal(messageType, data = {}) {
             if (ws && ws.readyState === WebSocket.OPEN) {
-                let message = {
+                const message = {
                     message_type: messageType,
-                    room_id: data.room_id,
-                    peer_id: data.peer_id,
-                    sdp: data.sdp,
-                    candidate: data.candidate,
-                    from_peer: data.from_peer,
+                    room_id: data.room_id || document.getElementById('roomId').value,
+                    peer_id: data.peer_id || document.getElementById('peerId').value,
+                    sdp: data.sdp || undefined,
+                    candidate: data.candidate || undefined,
+                    from_peer: data.from_peer || document.getElementById('peerId').value,
                     to_peer: data.to_peer
                 };
                 
+                Object.keys(message).forEach(key => 
+                    message[key] === undefined && delete message[key]
+                );
+                
                 console.log("Sending message:", message);
                 ws.send(JSON.stringify(message));
+            } else {
+                console.error("WebSocket is not open");
             }
         }
 
@@ -294,6 +300,14 @@
                     return;
                 }
 
+                const targetPeers = otherPeers.filter(p => p !== peerId);
+                if (targetPeers.length === 0) {
+                    updateStatus('No other peers to call', true);
+                    return;
+                }
+
+                const targetPeer = targetPeers[0];
+
                 if (!peerConnection || peerConnection.signalingState === "closed") {
                     await setupPeerConnection();
                 }
@@ -303,13 +317,8 @@
                     return;
                 }
 
-                console.log('Creating offer as call initiator');
                 const offer = await peerConnection.createOffer();
-                console.log('Setting local description');
                 await peerConnection.setLocalDescription(offer);
-                
-                const targetPeer = otherPeers[0];
-                console.log('Sending offer to peer:', targetPeer);
                 
                 sendSignal('Offer', {
                     room_id: roomId,
@@ -317,11 +326,11 @@
                     from_peer: peerId,
                     to_peer: targetPeer
                 });
-
-                updateStatus('Call started');
-            } catch (err) {
-                console.error('Error in startCall:', err);
-                updateStatus('Call error: ' + err.message, true);
+                
+                updateStatus('Calling peer: ' + targetPeer);
+            } catch (e) {
+                console.error('Error starting call:', e);
+                updateStatus('Error starting call: ' + e.message, true);
             }
         }
 
@@ -411,12 +420,24 @@
 
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
-                    sendSignal('IceCandidate', {
-                        room_id: document.getElementById('roomId').value,
-                        candidate: JSON.stringify(event.candidate),
-                        from_peer: document.getElementById('peerId').value,
-                        to_peer: document.getElementById('peerId').value
-                    });
+                    // Get the current peer list and find the other peer
+                    const peerListDiv = document.getElementById('peerList');
+                    const peerListText = peerListDiv.textContent;
+                    const otherPeers = peerListText.includes('Connected peers: ') 
+                        ? peerListText.replace('Connected peers: ', '').split(', ')
+                        : [];
+                    
+                    const currentPeerId = document.getElementById('peerId').value;
+                    const targetPeer = otherPeers.find(p => p !== currentPeerId);
+
+                    if (targetPeer) {
+                        sendSignal('IceCandidate', {
+                            room_id: document.getElementById('roomId').value,
+                            candidate: JSON.stringify(event.candidate),
+                            from_peer: currentPeerId,
+                            to_peer: targetPeer
+                        });
+                    }
                 }
             };
 

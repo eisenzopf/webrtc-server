@@ -25,6 +25,10 @@ impl ConnectionMetrics {
     }
 
     pub fn update_last_seen(&mut self) {
-        self.last_seen = std::time::Instant::now();
+        self.last_seen = Instant::now();
     }
-}
+
+    pub fn is_stale(&self, timeout: Duration) -> bool {
+        self.last_seen.elapsed() > timeout
+    }
+} 
