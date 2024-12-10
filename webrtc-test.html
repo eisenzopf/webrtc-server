@@ -281,6 +281,19 @@
                                     updateStatus(`Call accepted by ${remotePeerId}`);
                                     // Create RTCPeerConnection and continue with the call setup
                                     await setupPeerConnection();
+                                    
+                                    // Create and send offer
+                                    const offer = await peerConnection.createOffer({
+                                        offerToReceiveAudio: true
+                                    });
+                                    await peerConnection.setLocalDescription(offer);
+                                    
+                                    sendSignal('Offer', {
+                                        room_id: document.getElementById('roomId').value,
+                                        sdp: offer.sdp,
+                                        from_peer: document.getElementById('peerId').value,
+                                        to_peer: remotePeerId
+                                    });
                                 }
                                 break;
                         }
