@@ -115,6 +115,7 @@
         let isDisconnecting = false;
         let peerConnections = {};  // Store multiple peer connections
         let activeCallRequests = new Set();  // Track pending call requests
+        let remotePeerId = null;
 
         window.addEventListener('beforeunload', () => {
             if (!isDisconnecting) {
@@ -260,6 +261,7 @@
 
                             case "CallRequest":
                                 console.log("Received CallRequest message:", message);
+                                remotePeerId = message.from_peer;
                                 if (message.to_peers.includes(document.getElementById('peerId').value)) {
                                     console.log("This peer is a target of the call");
                                     const caller = message.from_peer;
@@ -284,6 +286,7 @@
 
                             case "CallResponse":
                                 if (message.to_peer === document.getElementById('peerId').value) {
+                                    remotePeerId = message.from_peer;
                                     if (message.accepted) {
                                         if (!peerConnections[message.from_peer]) {
                                             peerConnections[message.from_peer] = await setupPeerConnection();
@@ -302,6 +305,7 @@
                                     }
                                     activeCallRequests.delete(message.from_peer);
                                 }
+                                remotePeerId = message.from_peer;
                                 break;
                         }
                     } catch (err) {
@@ -439,8 +443,13 @@
                     }
                     break;
                 case 'IceCandidate':
-                    if (data.to_peer === '*' || data.to_peer === peerId) {
-                        await peerConnection.addIceCandidate(JSON.parse(data.candidate));
+                    if (peerConnection) {
+                        try {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                            console.log('Added ICE candidate from peer:', message.from_peer);
+                        } catch (err) {
+                            console.error('Error adding ICE candidate:', err);
+                        }
                     }
                     break;
             }
@@ -549,7 +558,7 @@
                             sdpMLineIndex: event.candidate.sdpMLineIndex
                         },
                         from_peer: document.getElementById('peerId').value,
-                        to_peer: targetPeerId // Make sure this variable is set during call setup
+                        to_peer: remotePeerId
                     });
                 }
             };
@@ -572,20 +581,21 @@
             });
 
             peerConnection.onconnectionstatechange = () => {
-                console.log('Connection state change:', {
+                const state = {
                     connectionState: peerConnection.connectionState,
                     iceConnectionState: peerConnection.iceConnectionState,
                     signalingState: peerConnection.signalingState
-                });
+                };
+                console.log('Connection state change:', state);
 
                 switch (peerConnection.connectionState) {
                     case 'connected':
-                        updateStatus('Call connected');
+                        updateStatus(`Connected to ${remotePeerId}`);
                         document.getElementById('audioStatus').textContent = 'Audio status: Connected';
                         break;
                     case 'disconnected':
                     case 'failed':
-                        updateStatus('Call disconnected', true);
+                        updateStatus('Connection failed or disconnected', true);
                         document.getElementById('audioStatus').textContent = 'Audio status: Disconnected';
                         break;
                     case 'connecting':
@@ -600,6 +610,23 @@
                     signalingState: peerConnection.signalingState,
                     connectionState: peerConnection.connectionState
                 });
+
+                switch (peerConnection.iceConnectionState) {
+                    case 'connected':
+                    case 'completed':
+                        updateStatus(`Connected to ${remotePeerId}`);
+                        document.getElementById('audioStatus').textContent = 'Audio status: Connected';
+                        break;
+                    case 'failed':
+                        updateStatus('ICE connection failed', true);
+                        break;
+                    case 'disconnected':
+                        updateStatus('ICE connection disconnected', true);
+                        break;
+                    case 'checking':
+                        updateStatus('Checking ICE connection...');
+                        break;
+                }
             };
 
             peerConnection.onicegatheringstatechange = () => {
@@ -663,6 +690,7 @@
         }
 
         function updateStatus(message, isError = false) {
+            console.log('Status update:', message, isError);
             const status = document.getElementById('connectionStatus');
             status.textContent = message;
             status.className = 'status ' + (isError ? 'error' : 'success');
