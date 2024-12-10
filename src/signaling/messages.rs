@@ -46,6 +46,17 @@ pub enum SignalingMessage {
         room_id: String,
         peer_id: String,
     },
+    CallRequest {
+        room_id: String,
+        from_peer: String,
+        to_peers: Vec<String>,
+    },
+    CallResponse {
+        room_id: String,
+        from_peer: String,
+        to_peer: String,
+        accepted: bool,
+    }
 }
 
 impl Default for SignalingMessage {

@@ -55,6 +55,22 @@
         label {
             margin-right: 10px;
         }
+        .peer-list {
+            margin: 10px 0;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .peer-item {
+            display: flex;
+            align-items: center;
+            padding: 5px;
+            margin: 2px 0;
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
+        .peer-item input[type="checkbox"] {
+            margin-right: 10px;
+        }
     </style>
 </head>
 <body>
@@ -80,6 +96,14 @@
         <div class="status" id="audioStatus">Audio status: Not connected</div>
     </div>
 
+    <div class="control-panel">
+        <h3>Available Peers</h3>
+        <div id="selectablePeerList" class="peer-list">
+            <!-- Peers will be dynamically added here -->
+        </div>
+        <button onclick="startCall()">Call Selected Peers</button>
+    </div>
+
     <div class="status" id="connectionStatus">Not connected</div>
     <div class="status" id="peerList">No peers connected</div>
 
@@ -89,6 +113,8 @@
         let localStream;
         let isMuted = false;
         let isDisconnecting = false;
+        let peerConnections = {};  // Store multiple peer connections
+        let activeCallRequests = new Set();  // Track pending call requests
 
         window.addEventListener('beforeunload', () => {
             if (!isDisconnecting) {
@@ -134,15 +160,14 @@
                             case "PeerList":
                                 const currentPeerId = document.getElementById('peerId').value;
                                 const otherPeers = message.peers.filter(p => p !== currentPeerId);
-                                const peerListDiv = document.getElementById('peerList');
+                                const peerListDiv = document.getElementById('selectablePeerList');
                                 
-                                if (otherPeers.length > 0) {
-                                    peerListDiv.textContent = 'Connected peers: ' + otherPeers.join(', ');
-                                    peerListDiv.className = 'status success';
-                                } else {
-                                    peerListDiv.textContent = 'No other peers connected';
-                                    peerListDiv.className = 'status';
-                                }
+                                peerListDiv.innerHTML = otherPeers.map(peerId => `
+                                    <div class="peer-item">
+                                        <input type="checkbox" id="peer_${peerId}" value="${peerId}">
+                                        <label for="peer_${peerId}">${peerId}</label>
+                                    </div>
+                                `).join('');
                                 break;
 
                             case "Offer":
@@ -232,6 +257,52 @@
                                     document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
                                 }
                                 break;
+
+                            case "CallRequest":
+                                console.log("Received CallRequest message:", message);
+                                if (message.to_peers.includes(document.getElementById('peerId').value)) {
+                                    console.log("This peer is a target of the call");
+                                    const caller = message.from_peer;
+                                    console.log("Showing call alert for caller:", caller);
+                                    const accepted = await showCallAlert(caller);
+                                    console.log("Call was " + (accepted ? "accepted" : "rejected"));
+                                    
+                                    sendSignal('CallResponse', {
+                                        room_id: document.getElementById('roomId').value,
+                                        from_peer: document.getElementById('peerId').value,
+                                        to_peer: caller,
+                                        accepted: accepted
+                                    });
+                                    
+                                    if (accepted) {
+                                        await setupPeerConnection();
+                                    }
+                                } else {
+                                    console.log("This peer is not a target of the call");
+                                }
+                                break;
+
+                            case "CallResponse":
+                                if (message.to_peer === document.getElementById('peerId').value) {
+                                    if (message.accepted) {
+                                        if (!peerConnections[message.from_peer]) {
+                                            peerConnections[message.from_peer] = await setupPeerConnection();
+                                            const offer = await peerConnections[message.from_peer].createOffer();
+                                            await peerConnections[message.from_peer].setLocalDescription(offer);
+                                            
+                                            sendSignal('Offer', {
+                                                room_id: document.getElementById('roomId').value,
+                                                sdp: offer.sdp,
+                                                from_peer: document.getElementById('peerId').value,
+                                                to_peer: message.from_peer
+                                            });
+                                        }
+                                    } else {
+                                        updateStatus(`Peer ${message.from_peer} declined the call`);
+                                    }
+                                    activeCallRequests.delete(message.from_peer);
+                                }
+                                break;
                         }
                     } catch (err) {
                         console.error('Failed to process WebSocket message:', err);
@@ -297,55 +368,23 @@
         }
 
         async function startCall() {
-            try {
-                const roomId = document.getElementById('roomId').value;
-                const peerId = document.getElementById('peerId').value;
-                const peerListDiv = document.getElementById('peerList');
-                const peerListText = peerListDiv.textContent;
-                
-                const otherPeers = peerListText.includes('Connected peers: ') 
-                    ? peerListText.replace('Connected peers: ', '').split(', ')
-                    : [];
-                
-                console.log('Found peers to call:', otherPeers);
-                
-                if (otherPeers.length === 0) {
-                    updateStatus('No other peers to call', true);
-                    return;
-                }
-
-                const targetPeers = otherPeers.filter(p => p !== peerId);
-                if (targetPeers.length === 0) {
-                    updateStatus('No other peers to call', true);
-                    return;
-                }
-
-                const targetPeer = targetPeers[0];
-
-                if (!peerConnection || peerConnection.signalingState === "closed") {
-                    await setupPeerConnection();
-                }
-
-                if (peerConnection.signalingState !== "stable") {
-                    console.log("Cannot start call - connection not in stable state");
-                    return;
-                }
-
-                const offer = await peerConnection.createOffer();
-                await peerConnection.setLocalDescription(offer);
-                
-                sendSignal('Offer', {
-                    room_id: roomId,
-                    sdp: offer.sdp,
-                    from_peer: peerId,
-                    to_peer: targetPeer
-                });
-                
-                updateStatus('Calling peer: ' + targetPeer);
-            } catch (e) {
-                console.error('Error starting call:', e);
-                updateStatus('Error starting call: ' + e.message, true);
+            const selectedPeers = Array.from(document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            
+            if (selectedPeers.length === 0) {
+                updateStatus('Please select at least one peer to call', true);
+                return;
             }
+
+            // Send call request to selected peers
+            sendSignal('CallRequest', {
+                room_id: document.getElementById('roomId').value,
+                from_peer: document.getElementById('peerId').value,
+                to_peers: selectedPeers
+            });
+            
+            updateStatus(`Calling ${selectedPeers.length} peer(s)...`);
+            activeCallRequests = new Set(selectedPeers);
         }
 
         async function handleSignaling(event) {
@@ -552,6 +591,13 @@
                 console.error('Error ending call:', err);
                 updateStatus('Error ending call: ' + err.message, true);
             }
+        }
+
+        function showCallAlert(caller) {
+            return new Promise((resolve) => {
+                const result = window.confirm(`Incoming call from ${caller}. Accept?`);
+                resolve(result);
+            });
         }
     </script>
 </body>

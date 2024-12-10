@@ -53,6 +53,14 @@ impl MessageHandler {
         current_room_id: &mut Option<String>,
     ) -> Result<()> {
         match message {
+            SignalingMessage::CallRequest { room_id, from_peer, to_peers } => {
+                println!("Handling CallRequest: from={}, to={:?}, room={}", 
+                    from_peer, to_peers, room_id);
+                self.handle_call_request(room_id, from_peer, to_peers).await
+            },
+            SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted } => {
+                self.handle_call_response(room_id, from_peer, to_peer, accepted).await
+            },
             SignalingMessage::Join { room_id, peer_id } => {
                 self.handle_join(room_id, peer_id, sender, current_peer_id, current_room_id).await
             },
@@ -190,6 +198,71 @@ impl MessageHandler {
             self.broadcast_to_room(&room_id, &peer_list_msg).await?;
         }
 
+        Ok(())
+    }
+
+    async fn handle_call_request(
+        &self,
+        room_id: String,
+        from_peer: String,
+        to_peers: Vec<String>
+    ) -> Result<()> {
+        println!("Entering handle_call_request: room={}, from={}, to={:?}", 
+            room_id, from_peer, to_peers);
+        
+        let peers = self.peers.read().await;
+        println!("Current peers in room: {:?}", 
+            peers.get(&room_id).map(|p| p.len()).unwrap_or(0));
+        
+        if let Some(room_peers) = peers.get(&room_id) {
+            let call_request = SignalingMessage::CallRequest {
+                room_id: room_id.clone(),
+                from_peer: from_peer.clone(),
+                to_peers: to_peers.clone(),
+            };
+            
+            // Send to each target peer
+            for (peer_id, sender) in room_peers {
+                if to_peers.contains(peer_id) {
+                    println!("Attempting to send call request to peer: {}", peer_id);
+                    if let Ok(msg) = serde_json::to_string(&call_request) {
+                        let mut sender = sender.lock().await;
+                        match sender.send(Message::Text(msg)).await {
+                            Ok(_) => println!("Successfully sent call request to peer {}", peer_id),
+                            Err(e) => eprintln!("Failed to send call request to peer {}: {}", peer_id, e),
+                        }
+                    }
+                }
+            }
+        } else {
+            println!("No peers found in room {}", room_id);
+        }
+        Ok(())
+    }
+
+    async fn handle_call_response(
+        &self,
+        room_id: String,
+        from_peer: String,
+        to_peer: String,
+        accepted: bool,
+    ) -> Result<()> {
+        let peers = self.peers.read().await;
+        if let Some(room_peers) = peers.get(&room_id) {
+            if let Some((_, target_sender)) = room_peers.iter().find(|(id, _)| id == &to_peer) {
+                let response = SignalingMessage::CallResponse {
+                    room_id,
+                    from_peer,
+                    to_peer,
+                    accepted,
+                };
+                
+                if let Ok(msg) = serde_json::to_string(&response) {
+                    let mut sender = target_sender.lock().await;
+                    let _ = sender.send(Message::Text(msg)).await;
+                }
+            }
+        }
         Ok(())
     }
 
