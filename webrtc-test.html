@@ -348,14 +348,10 @@
             if (ws && ws.readyState === WebSocket.OPEN) {
                 const message = {
                     message_type: messageType,
-                    room_id: data.room_id || document.getElementById('roomId').value,
-                    peer_id: data.peer_id || document.getElementById('peerId').value,
-                    sdp: data.sdp || undefined,
-                    candidate: data.candidate || undefined,
-                    from_peer: data.from_peer || document.getElementById('peerId').value,
-                    to_peer: data.to_peer
+                    ...data  // Spread the data object directly
                 };
                 
+                // Remove any undefined fields
                 Object.keys(message).forEach(key => 
                     message[key] === undefined && delete message[key]
                 );
