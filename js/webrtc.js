@@ -16,9 +16,9 @@ async function setupPeerConnection() {
 
     console.log("Creating new RTCPeerConnection");
     peerConnection = new RTCPeerConnection({
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' }
-        ]
+        iceServers: [{
+            urls: 'stun:127.0.0.1:3478'
+        }]
     });
 
     peerConnection.ontrack = handleTrackEvent;
