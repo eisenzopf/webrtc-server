@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Voice Test Client</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <h1>WebRTC Voice Test Client</h1>
+    
+    <div class="control-panel">
+        <h3>Connection Settings</h3>
+        <div>
+            <label for="roomId">Room ID:</label>
+            <input type="text" id="roomId" value="test-room">
+            <label for="peerId">Peer ID:</label>
+            <input type="text" id="peerId">
+        </div>
+        <button onclick="connect()">Connect to Server</button>
+        <button onclick="startCall()">Start Call</button>
+        <button onclick="endCall()">End Call</button>
+        <button onclick="disconnect()">Disconnect</button>
+    </div>
+
+    <div class="control-panel">
+        <h3>Audio Controls</h3>
+        <button onclick="toggleMute()" id="muteButton">Mute</button>
+        <div class="status" id="audioStatus">Audio status: Not connected</div>
+    </div>
+
+    <div class="control-panel">
+        <h3>Available Peers</h3>
+        <div id="selectablePeerList" class="peer-list">
+            <!-- Peers will be dynamically added here -->
+        </div>
+        <button onclick="startCall()">Call Selected Peers</button>
+    </div>
+
+    <div class="status" id="connectionStatus">Not connected</div>
+    <div class="status" id="peerList">No peers connected</div>
+
+    <script src="js/audio.js"></script>
+    <script src="js/webrtc.js"></script>
+    <script src="js/signaling.js"></script>
+    <script src="js/ui.js"></script>
+</body>
+</html> 
