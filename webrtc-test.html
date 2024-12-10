@@ -486,7 +486,13 @@
 
             console.log("Creating new RTCPeerConnection");
             peerConnection = new RTCPeerConnection({
-                sdpSemantics: 'unified-plan'
+                sdpSemantics: 'unified-plan',
+                iceServers: [{
+                    urls: [
+                        'stun:stun.l.google.com:19302',
+                        'stun:stun1.l.google.com:19302'
+                    ]
+                }]
             });
 
             peerConnection.ontrack = event => {
@@ -583,11 +589,6 @@
                 track.onmute = () => console.log('Local track muted:', track.id);
                 track.onunmute = () => console.log('Local track unmuted:', track.id);
             });
-
-            peerConnection.onconnectionstatechange = () => {
-                console.log('Connection state changed:', peerConnection.connectionState);
-                updateCallStatus(peerConnection.connectionState);
-            };
 
             peerConnection.oniceconnectionstatechange = () => {
                 console.log('ICE Connection State Change:', {
@@ -828,34 +829,44 @@
         }
 
         function monitorAudioState(stream) {
-            const audioTracks = stream.getAudioTracks();
-            audioTracks.forEach(track => {
-                console.log('Audio track state:', {
-                    enabled: track.enabled,
-                    muted: track.muted,
-                    readyState: track.readyState,
-                    id: track.id,
-                    settings: track.getSettings()
-                });
-
-                // Add volume meter
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const source = audioContext.createMediaStreamSource(new MediaStream([track]));
-                const analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                source.connect(analyser);
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            const analyser = audioContext.createAnalyser();
+            
+            analyser.fftSize = 2048;
+            analyser.minDecibels = -90;
+            analyser.maxDecibels = -10;
+            analyser.smoothingTimeConstant = 0.85;
+            
+            source.connect(analyser);
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            function checkAudioLevel() {
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
                 
-                function checkLevel() {
-                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-                    analyser.getByteFrequencyData(dataArray);
-                    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                    if (average > 0) {
-                        console.log(`Track ${track.id} level:`, average);
-                    }
-                    requestAnimationFrame(checkLevel);
+                if (average > 0) {
+                    console.log('Audio level detected:', {
+                        average,
+                        streamId: stream.id,
+                        tracks: stream.getTracks().map(t => ({
+                            id: t.id,
+                            kind: t.kind,
+                            enabled: t.enabled,
+                            muted: t.muted,
+                            readyState: t.readyState
+                        }))
+                    });
                 }
-                checkLevel();
-            });
+                requestAnimationFrame(checkAudioLevel);
+            }
+            
+            checkAudioLevel();
+            
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
         }
 
         function updateCallStatus(state, peer = null) {
