@@ -461,15 +461,88 @@
             });
 
             peerConnection.ontrack = event => {
-                console.log('Received remote track:', event);
+                console.log('Track received:', {
+                    kind: event.track.kind,
+                    readyState: event.track.readyState,
+                    enabled: event.track.enabled,
+                    muted: event.track.muted,
+                    id: event.track.id
+                });
+
+                event.track.onmute = () => {
+                    console.log('Track muted:', event.track.id);
+                    // Try to unmute if muted
+                    event.track.enabled = true;
+                };
+                
+                event.track.onunmute = () => {
+                    console.log('Track unmuted:', event.track.id);
+                    event.track.enabled = true;
+                };
+                
+                event.track.onended = () => console.log('Track ended:', event.track.id);
+                
+                // Create a single audio element
                 const audio = new Audio();
+                audio.autoplay = true;
+                audio.playsInline = true;
                 audio.srcObject = event.streams[0];
-                audio.play().catch(e => console.error('Error playing audio:', e));
+                
+                // Remove the AudioContext setup and just use the audio element
+                audio.onloadedmetadata = async () => {
+                    console.log('Audio metadata loaded, attempting playback');
+                    try {
+                        await audio.play();
+                        console.log('Audio playback started successfully');
+                        // Remove the window.activeAudio reference as it's not needed
+                        audio.volume = 1.0;  // Ensure volume is up
+                    } catch (e) {
+                        console.error('Error during audio playback:', e);
+                        const playButton = document.createElement('button');
+                        playButton.textContent = 'Start Audio';
+                        playButton.onclick = async () => {
+                            try {
+                                await audio.play();
+                                audio.volume = 1.0;
+                                console.log('Manual audio playback started');
+                                playButton.remove();
+                            } catch (err) {
+                                console.error('Manual playback failed:', err);
+                            }
+                        };
+                        document.body.appendChild(playButton);
+                    }
+                };
+                
+                audio.onerror = (e) => console.error('Audio element error:', e);
+
+                if (event.track.kind === 'audio') {
+                    const volumeDiv = setupVolumeIndicator();
+                    const audioContext = new AudioContext();
+                    const source = audioContext.createMediaStreamSource(event.streams[0]);
+                    const analyser = audioContext.createAnalyser();
+                    const destination = audioContext.destination;
+                    analyser.fftSize = 256;
+                    
+                    // Connect the audio pipeline
+                    source.connect(analyser);
+                    source.connect(destination);  // Add this line to hear audio
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    function updateVolume() {
+                        analyser.getByteFrequencyData(dataArray);
+                        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                        volumeDiv.textContent = `Input Level: ${Math.round(average)}`;
+                        volumeDiv.style.backgroundColor = average > 0 ? '#4CAF50' : '#fff';
+                        requestAnimationFrame(updateVolume);
+                    }
+                    updateVolume();
+                }
             };
 
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
-                    // Get the current peer list and find the other peer
+                    console.log('Generated ICE candidate:', event.candidate);
                     const peerListDiv = document.getElementById('peerList');
                     const peerListText = peerListDiv.textContent;
                     const otherPeers = peerListText.includes('Connected peers: ') 
@@ -487,17 +560,49 @@
                             to_peer: targetPeer
                         });
                     }
+                } else {
+                    console.log('ICE candidate generation completed');
                 }
             };
 
             console.log("Adding local tracks to connection");
             localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
+                track.enabled = true;  // Ensure track is enabled
+                const sender = peerConnection.addTrack(track, localStream);
+                console.log('Local track added:', {
+                    kind: track.kind,
+                    enabled: track.enabled,
+                    muted: track.muted,
+                    id: track.id
+                });
             });
 
             peerConnection.onconnectionstatechange = () => {
-                console.log("Connection state:", peerConnection.connectionState);
-                updateStatus(`Connection state: ${peerConnection.connectionState}`);
+                const states = {
+                    connection: peerConnection.connectionState,
+                    iceConnection: peerConnection.iceConnectionState,
+                    iceGathering: peerConnection.iceGatheringState,
+                    signaling: peerConnection.signalingState
+                };
+                console.log('Connection states:', states);
+                
+                if (peerConnection.connectionState === 'connected') {
+                    console.log('WebRTC connection established');
+                    // Verify audio tracks
+                    const audioTracks = peerConnection.getReceivers()
+                        .filter(receiver => receiver.track.kind === 'audio')
+                        .map(receiver => ({
+                            kind: receiver.track.kind,
+                            readyState: receiver.track.readyState,
+                            enabled: receiver.track.enabled,
+                            muted: receiver.track.muted
+                        }));
+                    console.log('Audio tracks:', audioTracks);
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("ICE connection state changed:", peerConnection.iceConnectionState);
             };
 
             return peerConnection;
@@ -507,6 +612,7 @@
             if (localStream) {
                 localStream.getAudioTracks().forEach(track => {
                     track.enabled = isMuted;
+                    console.log(`Audio track ${track.id} enabled:`, track.enabled);
                 });
                 isMuted = !isMuted;
                 document.getElementById('muteButton').textContent = isMuted ? 'Unmute' : 'Mute';
@@ -595,6 +701,58 @@
                 resolve(result);
             });
         }
+
+        function setupAudioLevelMonitoring(stream) {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            function checkAudioLevel() {
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                console.log('Audio level:', average);
+                requestAnimationFrame(checkAudioLevel);
+            }
+            
+            checkAudioLevel();
+        }
+
+        function setupVolumeIndicator() {
+            const volumeDiv = document.createElement('div');
+            volumeDiv.style.padding = '10px';
+            volumeDiv.style.margin = '10px';
+            volumeDiv.style.border = '1px solid #ccc';
+            document.body.appendChild(volumeDiv);
+            
+            return volumeDiv;
+        }
+
+        function addDebugButton() {
+            const button = document.createElement('button');
+            button.textContent = 'Check Audio State';
+            button.onclick = () => {
+                if (peerConnection) {
+                    const receivers = peerConnection.getReceivers();
+                    receivers.forEach(receiver => {
+                        console.log('Receiver track state:', {
+                            kind: receiver.track.kind,
+                            readyState: receiver.track.readyState,
+                            enabled: receiver.track.enabled,
+                            muted: receiver.track.muted,
+                            volume: receiver.track.volume
+                        });
+                    });
+                }
+            };
+            document.body.appendChild(button);
+        }
+
+        // Call this after connection is established
+        addDebugButton();
     </script>
 </body>
 </html>

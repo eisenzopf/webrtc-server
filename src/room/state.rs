@@ -1,6 +1,6 @@
 use crate::signaling::PeerConnection;
 use crate::media::relay::MediaRelay;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct MediaSettings {
@@ -23,6 +23,7 @@ pub struct Room {
     pub media_settings: MediaSettings,
     pub media_relays: HashMap<String, MediaRelay>,
     pub recording_enabled: bool,
+    pub connected_pairs: HashSet<(String, String)>,
 }
 
 impl Default for MediaSettings {
@@ -43,6 +44,7 @@ impl Default for Room {
             media_settings: MediaSettings::default(),
             media_relays: HashMap::new(),
             recording_enabled: false,
+            connected_pairs: HashSet::new(),
         }
     }
 } 

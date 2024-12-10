@@ -94,17 +94,7 @@ impl MessageHandler {
                 Ok(())
             },
             SignalingMessage::IceCandidate { ref room_id, ref candidate, ref from_peer, ref to_peer } => {
-                // Forward ICE candidates to the target peer
-                let peers = self.peers.read().await;
-                if let Some(room_peers) = peers.get(room_id) {
-                    if let Some((_, target_sender)) = room_peers.iter().find(|(id, _)| id == to_peer) {
-                        let mut sender = target_sender.lock().await;
-                        let msg = serde_json::to_string(&message)?;
-                        sender.send(Message::Text(msg)).await
-                            .map_err(|e| Error::WebSocket(e))?;
-                    }
-                }
-                Ok(())
+                self.handle_ice_candidate(&room_id, &candidate, &from_peer, &to_peer).await
             },
             SignalingMessage::EndCall { room_id, peer_id } => {
                 // Notify other peers in the room about the ended call
@@ -261,6 +251,72 @@ impl MessageHandler {
                     let mut sender = target_sender.lock().await;
                     let _ = sender.send(Message::Text(msg)).await;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_ice_candidate(
+        &self,
+        room_id: &str,
+        candidate: &str,
+        from_peer: &str,
+        to_peer: &str
+    ) -> Result<()> {
+        println!("Handling ICE candidate from {} to {} in room {}", from_peer, to_peer, room_id);
+        
+        let peers = self.peers.read().await;
+        if let Some(room_peers) = peers.get(room_id) {
+            if let Some((_, target_sender)) = room_peers.iter().find(|(id, _)| id == to_peer) {
+                let ice_message = SignalingMessage::IceCandidate {
+                    room_id: room_id.to_string(),
+                    candidate: candidate.to_string(),
+                    from_peer: from_peer.to_string(),
+                    to_peer: to_peer.to_string(),
+                };
+                
+                let mut sender = target_sender.lock().await;
+                match serde_json::to_string(&ice_message) {
+                    Ok(msg) => {
+                        if let Err(e) = sender.send(Message::Text(msg)).await {
+                            println!("Failed to send ICE candidate: {}", e);
+                            return Err(Error::WebSocket(e));
+                        }
+                        println!("Successfully forwarded ICE candidate");
+                    },
+                    Err(e) => {
+                        println!("Failed to serialize ICE candidate: {}", e);
+                        return Err(Error::Json(e));
+                    }
+                }
+            } else {
+                println!("Target peer {} not found", to_peer);
+            }
+        } else {
+            println!("Room {} not found", room_id);
+        }
+        Ok(())
+    }
+
+    async fn update_connection_state(
+        &self,
+        room_id: &str,
+        peer1: &str,
+        peer2: &str,
+        connected: bool
+    ) -> Result<()> {
+        let mut rooms = self.rooms.write().await;
+        if let Some(room) = rooms.get_mut(room_id) {
+            let pair = if peer1 < peer2 {
+                (peer1.to_string(), peer2.to_string())
+            } else {
+                (peer2.to_string(), peer1.to_string())
+            };
+            
+            if connected {
+                room.connected_pairs.insert(pair);
+            } else {
+                room.connected_pairs.remove(&pair);
             }
         }
         Ok(())
