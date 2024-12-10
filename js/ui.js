@@ -59,18 +59,36 @@ function showCallAlert(caller) {
 
 function addDebugButton() {
     const button = document.createElement('button');
-    button.textContent = 'Check Audio State';
-    button.onclick = () => {
-        if (peerConnection) {
-            const receivers = peerConnection.getReceivers();
-            receivers.forEach(receiver => {
-                console.log('Receiver track state:', {
-                    kind: receiver.track.kind,
-                    readyState: receiver.track.readyState,
-                    enabled: receiver.track.enabled,
-                    muted: receiver.track.muted,
-                    volume: receiver.track.volume
-                });
+    button.textContent = 'Debug Connection';
+    button.onclick = async () => {
+        if (!peerConnection) {
+            console.log('No peer connection exists');
+            return;
+        }
+
+        console.log('Connection States:', {
+            iceConnectionState: peerConnection.iceConnectionState,
+            connectionState: peerConnection.connectionState,
+            signalingState: peerConnection.signalingState,
+            iceGatheringState: peerConnection.iceGatheringState
+        });
+
+        const stats = await peerConnection.getStats();
+        stats.forEach(report => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                console.log('Active ICE Candidate Pair:', report);
+            }
+        });
+
+        const audioElement = document.getElementById('remoteAudio');
+        if (audioElement) {
+            console.log('Audio Element State:', {
+                readyState: audioElement.readyState,
+                paused: audioElement.paused,
+                currentTime: audioElement.currentTime,
+                srcObject: audioElement.srcObject ? 'present' : 'null',
+                volume: audioElement.volume,
+                muted: audioElement.muted
             });
         }
     };

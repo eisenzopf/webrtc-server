@@ -262,4 +262,56 @@ async function handleAnswerMessage(message) {
     } catch (err) {
         console.error("Error handling answer:", err);
     }
-} 
+}
+
+async function checkAudioPermissions() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+        
+        console.log('Audio permissions granted:', {
+            tracks: stream.getTracks().map(t => ({
+                kind: t.kind,
+                enabled: t.enabled,
+                muted: t.muted,
+                readyState: t.readyState
+            }))
+        });
+        
+        // Stop the test stream
+        stream.getTracks().forEach(track => track.stop());
+        return true;
+    } catch (err) {
+        console.error('Audio permission check failed:', err);
+        updateStatus('Microphone access denied. Please grant permission.', true);
+        return false;
+    }
+}
+
+async function handleIceCandidateMessage(message) {
+    if (!peerConnection) {
+        console.warn('Received ICE candidate but no peer connection exists');
+        return;
+    }
+    
+    try {
+        const candidate = new RTCIceCandidate({
+            candidate: message.candidate.candidate,
+            sdpMid: message.candidate.sdpMid,
+            sdpMLineIndex: message.candidate.sdpMLineIndex
+        });
+        
+        console.log('Adding ICE candidate:', candidate);
+        await peerConnection.addIceCandidate(candidate);
+    } catch (err) {
+        console.error('Error adding ICE candidate:', err);
+    }
+}
+
+// Call this before connecting
+window.addEventListener('load', checkAudioPermissions); 

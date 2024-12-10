@@ -16,13 +16,9 @@ async function setupPeerConnection() {
 
     console.log("Creating new RTCPeerConnection");
     peerConnection = new RTCPeerConnection({
-        sdpSemantics: 'unified-plan',
-        iceServers: [{
-            urls: [
-                'stun:stun.l.google.com:19302',
-                'stun:stun1.l.google.com:19302'
-            ]
-        }]
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' }
+        ]
     });
 
     peerConnection.ontrack = handleTrackEvent;
@@ -86,7 +82,16 @@ function handleTrackEvent(event) {
 
 function handleIceCandidate(event) {
     if (event.candidate) {
-        console.log('Sending ICE candidate:', event.candidate);
+        const candidateStr = event.candidate.candidate;
+        console.log('New ICE candidate:', {
+            candidate: candidateStr,
+            type: event.candidate.type,
+            protocol: candidateStr.split(' ')[2], // UDP/TCP
+            address: candidateStr.split(' ')[4], // IP address
+            port: candidateStr.split(' ')[5], // Port
+            candidateType: candidateStr.split(' ')[7] // type (host/srflx/relay)
+        });
+        
         sendSignal('IceCandidate', {
             room_id: document.getElementById('roomId').value,
             candidate: {
@@ -97,29 +102,55 @@ function handleIceCandidate(event) {
             from_peer: document.getElementById('peerId').value,
             to_peer: remotePeerId
         });
+    } else {
+        console.log('ICE Candidate gathering complete');
     }
 }
 
 function handleIceConnectionStateChange() {
-    console.log('ICE Connection State Change:', {
+    const states = {
         iceConnectionState: peerConnection.iceConnectionState,
         signalingState: peerConnection.signalingState,
         connectionState: peerConnection.connectionState,
         iceGatheringState: peerConnection.iceGatheringState
-    });
+    };
+    
+    console.log('ICE Connection State Change:', states);
 
     if (peerConnection.iceConnectionState === 'connected') {
         console.log('ICE Connection established');
+        
+        // Log the selected candidate pair
+        peerConnection.getStats().then(stats => {
+            stats.forEach(report => {
+                if (report.type === 'candidate-pair' && report.selected) {
+                    console.log('Selected candidate pair:', report);
+                }
+            });
+        });
+
+        // Monitor both streams
         const audioElement = document.getElementById('remoteAudio');
         if (audioElement && audioElement.srcObject) {
+            console.log('Monitoring remote audio stream');
             monitorAudioState(audioElement.srcObject);
+        } else {
+            console.warn('No remote audio stream found');
         }
+        
         if (localStream) {
+            console.log('Monitoring local audio stream');
             monitorAudioState(localStream);
+        } else {
+            console.warn('No local stream found');
         }
+    } else if (peerConnection.iceConnectionState === 'checking') {
+        console.log('ICE Connection checking...');
     } else if (peerConnection.iceConnectionState === 'failed') {
         console.error('ICE Connection failed');
         updateCallStatus('failed');
+    } else if (peerConnection.iceConnectionState === 'disconnected') {
+        console.warn('ICE Connection disconnected');
     }
 }
 
