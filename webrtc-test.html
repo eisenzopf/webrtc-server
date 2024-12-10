@@ -232,17 +232,20 @@
                                 break;
 
                             case "IceCandidate":
-                                console.log("Received ICE candidate from:", message.from_peer);
+                                console.log("Received ICE candidate message:", message);
                                 if (peerConnection && peerConnection.remoteDescription) {
                                     try {
                                         const candidate = JSON.parse(message.candidate);
-                                        console.log("Adding ICE candidate:", candidate);
+                                        console.log("Parsed ICE candidate:", candidate);
                                         await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                                        console.log("Successfully added ICE candidate");
                                     } catch (e) {
                                         console.error("Error adding received ICE candidate:", e);
                                     }
                                 } else {
                                     console.log("Ignoring ICE candidate - no peer connection or remote description");
+                                    console.log("PeerConnection:", !!peerConnection);
+                                    console.log("RemoteDescription:", peerConnection?.remoteDescription);
                                 }
                                 break;
 
@@ -334,10 +337,7 @@
                     audio: {
                         echoCancellation: true,
                         noiseSuppression: true,
-                        autoGainControl: true,
-                        channelCount: 1,
-                        sampleRate: 48000,
-                        sampleSize: 16
+                        autoGainControl: true
                     },
                     video: false
                 };
@@ -472,13 +472,20 @@
             if (!localStream) {
                 console.log("Getting user media");
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                const audioTracks = localStream.getAudioTracks();
+                console.log('Local audio tracks:', audioTracks.map(track => ({
+                    id: track.id,
+                    enabled: track.enabled,
+                    muted: track.muted,
+                    readyState: track.readyState,
+                    label: track.label,
+                    settings: track.getSettings()
+                })));
             }
 
             console.log("Creating new RTCPeerConnection");
             peerConnection = new RTCPeerConnection({
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' }
-                ],
                 sdpSemantics: 'unified-plan'
             });
 
@@ -488,75 +495,59 @@
                     readyState: event.track.readyState,
                     enabled: event.track.enabled,
                     muted: event.track.muted,
-                    id: event.track.id,
-                    streams: event.streams.length
+                    id: event.track.id
                 });
 
                 if (event.track.kind === 'audio') {
-                    const audioElement = document.createElement('audio');
-                    audioElement.id = 'remoteAudio';
-                    audioElement.autoplay = true;
-                    audioElement.playsInline = true;
-                    audioElement.controls = true;
-                    document.body.appendChild(audioElement);
-                    
-                    // Create audio context and analyzer
-                    const audioContext = new AudioContext();
-                    const source = audioContext.createMediaStreamSource(event.streams[0]);
-                    const analyzer = audioContext.createAnalyser();
-                    analyzer.fftSize = 2048;
-                    source.connect(analyzer);
-                    
-                    // Create volume meter
-                    const volumeMeter = document.createElement('div');
-                    volumeMeter.id = 'volumeMeter';
-                    volumeMeter.style.width = '200px';
-                    volumeMeter.style.height = '20px';
-                    volumeMeter.style.border = '1px solid black';
-                    document.body.appendChild(volumeMeter);
-                    
-                    const volumeBar = document.createElement('div');
-                    volumeBar.style.width = '0%';
-                    volumeBar.style.height = '100%';
-                    volumeBar.style.backgroundColor = 'green';
-                    volumeMeter.appendChild(volumeBar);
-                    
-                    // Update volume meter
-                    const dataArray = new Uint8Array(analyzer.frequencyBinCount);
-                    function updateVolume() {
-                        analyzer.getByteFrequencyData(dataArray);
-                        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                        const volume = (average / 255) * 100;
-                        volumeBar.style.width = volume + '%';
-                        requestAnimationFrame(updateVolume);
+                    // Create audio element if it doesn't exist
+                    let audioElement = document.getElementById('remoteAudio');
+                    if (!audioElement) {
+                        audioElement = document.createElement('audio');
+                        audioElement.id = 'remoteAudio';
+                        audioElement.autoplay = true;
+                        audioElement.playsInline = true;
+                        audioElement.controls = true;
+                        audioElement.volume = 1.0;  // Ensure volume is max
+                        document.body.appendChild(audioElement);
+                        console.log('Created new audio element:', audioElement);
                     }
-                    updateVolume();
-                    
-                    // Connect to audio element
-                    audioElement.srcObject = event.streams[0];
-                    
-                    // Add event listeners for debugging
-                    audioElement.onplay = () => console.log('Audio play event fired');
-                    audioElement.onplaying = () => console.log('Audio playing event fired');
-                    audioElement.onpause = () => console.log('Audio pause event fired');
-                    audioElement.onended = () => console.log('Audio ended event fired');
-                    audioElement.onerror = (e) => console.error('Audio error:', e);
+
+                    // Create a new MediaStream with the received track
+                    const stream = new MediaStream([event.track]);
+                    audioElement.srcObject = stream;
+                    console.log('Set stream to audio element:', {
+                        stream: stream.active,
+                        tracks: stream.getTracks().map(t => ({
+                            kind: t.kind,
+                            enabled: t.enabled,
+                            muted: t.muted
+                        }))
+                    });
+
+                    // Try to play immediately
+                    audioElement.play()
+                        .then(() => console.log('Initial audio playback started'))
+                        .catch(e => console.error('Initial play failed:', e));
 
                     // Monitor track state
-                    event.track.onmute = () => {
-                        console.log('Remote track muted:', event.track.id);
-                        document.getElementById('audioStatus').textContent = 'Audio status: Remote track muted';
-                    };
                     event.track.onunmute = () => {
-                        console.log('Remote track unmuted:', event.track.id);
-                        document.getElementById('audioStatus').textContent = 'Audio status: Remote track active';
-                        // Try playing when unmuted
-                        audioElement.play().catch(e => console.error('Play failed:', e));
+                        console.log('Remote track unmuted, attempting playback');
+                        audioElement.play()
+                            .then(() => console.log('Audio playback started after unmute'))
+                            .catch(e => console.error('Play after unmute failed:', e));
                     };
-                    event.track.onended = () => {
-                        console.log('Remote track ended:', event.track.id);
-                        document.getElementById('audioStatus').textContent = 'Audio status: Remote track ended';
-                    };
+
+                    // Add periodic audio element state checking
+                    setInterval(() => {
+                        console.log('Audio element state:', {
+                            paused: audioElement.paused,
+                            muted: audioElement.muted,
+                            volume: audioElement.volume,
+                            hasAudio: !audioElement.mozHasAudio !== undefined 
+                                ? audioElement.mozHasAudio 
+                                : audioElement.webkitAudioDecodedByteCount > 0
+                        });
+                    }, 2000);
                 }
             };
 
@@ -594,69 +585,31 @@
             });
 
             peerConnection.onconnectionstatechange = () => {
-                const state = {
-                    connectionState: peerConnection.connectionState,
-                    iceConnectionState: peerConnection.iceConnectionState,
-                    signalingState: peerConnection.signalingState,
-                    audioTransceivers: peerConnection.getTransceivers()
-                        .filter(t => t.receiver.track?.kind === 'audio')
-                        .map(t => ({
-                            currentDirection: t.currentDirection,
-                            direction: t.direction,
-                            trackEnabled: t.receiver.track?.enabled,
-                            trackMuted: t.receiver.track?.muted
-                        }))
-                };
-                console.log('Connection state change:', state);
-
-                // Update status based on connection state
-                switch (peerConnection.connectionState) {
-                    case 'connected':
-                        updateStatus(`Connected to ${remotePeerId}`);
-                        // Check audio tracks when connected
-                        const audioTracks = peerConnection.getReceivers()
-                            .filter(r => r.track?.kind === 'audio')
-                            .map(r => r.track);
-                        console.log('Active audio tracks:', audioTracks);
-                        break;
-                    case 'disconnected':
-                    case 'failed':
-                        updateStatus('Connection failed or disconnected', true);
-                        document.getElementById('audioStatus').textContent = 'Audio status: Disconnected';
-                        break;
-                    case 'connecting':
-                        updateStatus('Establishing connection...');
-                        break;
-                }
+                console.log('Connection state changed:', peerConnection.connectionState);
+                updateCallStatus(peerConnection.connectionState);
             };
 
             peerConnection.oniceconnectionstatechange = () => {
                 console.log('ICE Connection State Change:', {
                     iceConnectionState: peerConnection.iceConnectionState,
                     signalingState: peerConnection.signalingState,
-                    connectionState: peerConnection.connectionState
+                    connectionState: peerConnection.connectionState,
+                    iceGatheringState: peerConnection.iceGatheringState
                 });
 
-                switch (peerConnection.iceConnectionState) {
-                    case 'checking':
-                        updateStatus('Checking connection...');
-                        break;
-                    case 'connected':
-                    case 'completed':
-                        updateStatus(`Connected to ${remotePeerId}`);
-                        document.getElementById('audioStatus').textContent = 'Audio status: Connected';
-                        break;
-                    case 'disconnected':
-                        updateStatus('Connection interrupted...', true);
-                        break;
-                    case 'failed':
-                        updateStatus('Connection failed', true);
-                        document.getElementById('audioStatus').textContent = 'Audio status: Failed';
-                        break;
-                    case 'closed':
-                        updateStatus('Connection closed');
-                        document.getElementById('audioStatus').textContent = 'Audio status: Closed';
-                        break;
+                if (peerConnection.iceConnectionState === 'connected') {
+                    console.log('ICE Connection established');
+                    // Start monitoring audio levels for both local and remote tracks
+                    const audioElement = document.getElementById('remoteAudio');
+                    if (audioElement && audioElement.srcObject) {
+                        monitorAudioState(audioElement.srcObject);
+                    }
+                    if (localStream) {
+                        monitorAudioState(localStream);
+                    }
+                } else if (peerConnection.iceConnectionState === 'failed') {
+                    console.error('ICE Connection failed');
+                    updateCallStatus('failed');
                 }
             };
 
@@ -778,19 +731,42 @@
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioContext.createMediaStreamSource(stream);
             const analyser = audioContext.createAnalyser();
-            analyser.fftSize = 256;
+            
+            analyser.fftSize = 2048;
+            analyser.minDecibels = -90;
+            analyser.maxDecibels = -10;
+            analyser.smoothingTimeConstant = 0.85;
+            
             source.connect(analyser);
+            // Remove connection to destination to prevent feedback
+            // analyser.connect(audioContext.destination);
             
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
             
             function checkAudioLevel() {
                 analyser.getByteFrequencyData(dataArray);
                 const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                console.log('Audio level:', average);
+                
+                if (average > 0) {
+                    console.log('Audio level detected:', {
+                        average,
+                        stream: stream.id,
+                        tracks: stream.getTracks().map(t => ({
+                            id: t.id,
+                            kind: t.kind,
+                            enabled: t.enabled,
+                            muted: t.muted
+                        }))
+                    });
+                }
                 requestAnimationFrame(checkAudioLevel);
             }
             
             checkAudioLevel();
+            
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
         }
 
         function setupVolumeIndicator() {
@@ -830,23 +806,27 @@
                     enabled: track.enabled,
                     muted: track.muted,
                     readyState: track.readyState,
-                    id: track.id
+                    id: track.id,
+                    settings: track.getSettings()
                 });
 
-                track.onended = () => {
-                    console.log('Audio track ended:', track.id);
-                    updateStatus('Audio track ended', true);
-                };
-
-                track.onmute = () => {
-                    console.log('Audio track muted:', track.id);
-                    document.getElementById('audioStatus').textContent = 'Audio status: Muted';
-                };
-
-                track.onunmute = () => {
-                    console.log('Audio track unmuted:', track.id);
-                    document.getElementById('audioStatus').textContent = 'Audio status: Active';
-                };
+                // Add volume meter
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(new MediaStream([track]));
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                
+                function checkLevel() {
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(dataArray);
+                    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                    if (average > 0) {
+                        console.log(`Track ${track.id} level:`, average);
+                    }
+                    requestAnimationFrame(checkLevel);
+                }
+                checkLevel();
             });
         }
 
@@ -863,8 +843,38 @@
             }
         }
 
+        function addAudioDebugButton() {
+            const button = document.createElement('button');
+            button.textContent = 'Debug Audio';
+            button.onclick = () => {
+                const audioElement = document.getElementById('remoteAudio');
+                console.log('Audio element state:', {
+                    exists: !!audioElement,
+                    srcObject: !!audioElement?.srcObject,
+                    paused: audioElement?.paused,
+                    muted: audioElement?.muted,
+                    volume: audioElement?.volume
+                });
+                
+                if (peerConnection) {
+                    const receivers = peerConnection.getReceivers();
+                    receivers.forEach(receiver => {
+                        if (receiver.track.kind === 'audio') {
+                            console.log('Audio receiver:', {
+                                track: receiver.track,
+                                transport: receiver.transport,
+                                params: receiver.getParameters()
+                            });
+                        }
+                    });
+                }
+            };
+            document.body.appendChild(button);
+        }
+
         // Call this after connection is established
         addDebugButton();
+        addAudioDebugButton();
     </script>
 </body>
 </html>
