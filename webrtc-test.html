@@ -466,67 +466,30 @@
                     readyState: event.track.readyState,
                     enabled: event.track.enabled,
                     muted: event.track.muted,
-                    id: event.track.id
+                    id: event.track.id,
+                    streams: event.streams.length
                 });
 
-                event.track.onmute = () => {
-                    console.log('Track muted:', event.track.id);
-                    // Try to unmute if muted
-                    event.track.enabled = true;
-                };
-                
-                event.track.onunmute = () => {
-                    console.log('Track unmuted:', event.track.id);
-                    event.track.enabled = true;
-                };
-                
-                event.track.onended = () => console.log('Track ended:', event.track.id);
-                
-                // Create a single audio element
-                const audio = new Audio();
-                audio.autoplay = true;
-                audio.playsInline = true;
-                audio.srcObject = event.streams[0];
-                
-                // Remove the AudioContext setup and just use the audio element
-                audio.onloadedmetadata = async () => {
-                    console.log('Audio metadata loaded, attempting playback');
-                    try {
-                        await audio.play();
-                        console.log('Audio playback started successfully');
-                        // Remove the window.activeAudio reference as it's not needed
-                        audio.volume = 1.0;  // Ensure volume is up
-                    } catch (e) {
-                        console.error('Error during audio playback:', e);
-                        const playButton = document.createElement('button');
-                        playButton.textContent = 'Start Audio';
-                        playButton.onclick = async () => {
-                            try {
-                                await audio.play();
-                                audio.volume = 1.0;
-                                console.log('Manual audio playback started');
-                                playButton.remove();
-                            } catch (err) {
-                                console.error('Manual playback failed:', err);
-                            }
-                        };
-                        document.body.appendChild(playButton);
-                    }
-                };
-                
-                audio.onerror = (e) => console.error('Audio element error:', e);
-
                 if (event.track.kind === 'audio') {
+                    // Create audio element for playback
+                    const audio = new Audio();
+                    audio.srcObject = event.streams[0];
+                    audio.autoplay = true;
+                    audio.playsInline = true;
+                    
+                    // Set up volume meter
                     const volumeDiv = setupVolumeIndicator();
                     const audioContext = new AudioContext();
                     const source = audioContext.createMediaStreamSource(event.streams[0]);
                     const analyser = audioContext.createAnalyser();
-                    const destination = audioContext.destination;
                     analyser.fftSize = 256;
-                    
-                    // Connect the audio pipeline
                     source.connect(analyser);
-                    source.connect(destination);  // Add this line to hear audio
+                    
+                    // Create a gain node for volume control
+                    const gainNode = audioContext.createGain();
+                    gainNode.gain.value = 1.0;
+                    source.connect(gainNode);
+                    gainNode.connect(audioContext.destination);
                     
                     const dataArray = new Uint8Array(analyser.frequencyBinCount);
                     function updateVolume() {
@@ -537,37 +500,63 @@
                         requestAnimationFrame(updateVolume);
                     }
                     updateVolume();
+
+                    // Monitor track state changes
+                    event.track.onmute = () => {
+                        console.log('Remote track muted:', event.track.id);
+                        gainNode.gain.value = 0;
+                    };
+                    
+                    event.track.onunmute = () => {
+                        console.log('Remote track unmuted:', event.track.id);
+                        gainNode.gain.value = 1.0;
+                    };
+
+                    // Handle audio element events
+                    audio.onloadedmetadata = async () => {
+                        try {
+                            await audio.play();
+                            audio.volume = 1.0;
+                            console.log('Audio playback started:', {
+                                volume: audio.volume,
+                                muted: audio.muted,
+                                audioContextState: audioContext.state,
+                                gainValue: gainNode.gain.value
+                            });
+                        } catch (e) {
+                            console.error('Playback failed:', e);
+                            const playButton = document.createElement('button');
+                            playButton.textContent = 'Start Audio';
+                            playButton.onclick = async () => {
+                                await audioContext.resume();
+                                await audio.play();
+                                playButton.remove();
+                            };
+                            document.body.appendChild(playButton);
+                        }
+                    };
                 }
             };
 
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
-                    console.log('Generated ICE candidate:', event.candidate);
-                    const peerListDiv = document.getElementById('peerList');
-                    const peerListText = peerListDiv.textContent;
-                    const otherPeers = peerListText.includes('Connected peers: ') 
-                        ? peerListText.replace('Connected peers: ', '').split(', ')
-                        : [];
-                    
-                    const currentPeerId = document.getElementById('peerId').value;
-                    const targetPeer = otherPeers.find(p => p !== currentPeerId);
-
-                    if (targetPeer) {
-                        sendSignal('IceCandidate', {
-                            room_id: document.getElementById('roomId').value,
-                            candidate: JSON.stringify(event.candidate),
-                            from_peer: currentPeerId,
-                            to_peer: targetPeer
-                        });
-                    }
-                } else {
-                    console.log('ICE candidate generation completed');
+                    console.log('Sending ICE candidate:', event.candidate);
+                    sendSignal('IceCandidate', {
+                        room_id: document.getElementById('roomId').value,
+                        candidate: {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex
+                        },
+                        from_peer: document.getElementById('peerId').value,
+                        to_peer: targetPeerId // Make sure this variable is set during call setup
+                    });
                 }
             };
 
             console.log("Adding local tracks to connection");
             localStream.getTracks().forEach(track => {
-                track.enabled = true;  // Ensure track is enabled
+                track.enabled = true;
                 const sender = peerConnection.addTrack(track, localStream);
                 console.log('Local track added:', {
                     kind: track.kind,
@@ -575,34 +564,50 @@
                     muted: track.muted,
                     id: track.id
                 });
+
+                // Monitor track state changes
+                track.onended = () => console.log('Local track ended:', track.id);
+                track.onmute = () => console.log('Local track muted:', track.id);
+                track.onunmute = () => console.log('Local track unmuted:', track.id);
             });
 
             peerConnection.onconnectionstatechange = () => {
-                const states = {
-                    connection: peerConnection.connectionState,
-                    iceConnection: peerConnection.iceConnectionState,
-                    iceGathering: peerConnection.iceGatheringState,
-                    signaling: peerConnection.signalingState
-                };
-                console.log('Connection states:', states);
-                
-                if (peerConnection.connectionState === 'connected') {
-                    console.log('WebRTC connection established');
-                    // Verify audio tracks
-                    const audioTracks = peerConnection.getReceivers()
-                        .filter(receiver => receiver.track.kind === 'audio')
-                        .map(receiver => ({
-                            kind: receiver.track.kind,
-                            readyState: receiver.track.readyState,
-                            enabled: receiver.track.enabled,
-                            muted: receiver.track.muted
-                        }));
-                    console.log('Audio tracks:', audioTracks);
+                console.log('Connection state change:', {
+                    connectionState: peerConnection.connectionState,
+                    iceConnectionState: peerConnection.iceConnectionState,
+                    signalingState: peerConnection.signalingState
+                });
+
+                switch (peerConnection.connectionState) {
+                    case 'connected':
+                        updateStatus('Call connected');
+                        document.getElementById('audioStatus').textContent = 'Audio status: Connected';
+                        break;
+                    case 'disconnected':
+                    case 'failed':
+                        updateStatus('Call disconnected', true);
+                        document.getElementById('audioStatus').textContent = 'Audio status: Disconnected';
+                        break;
+                    case 'connecting':
+                        updateStatus('Establishing connection...');
+                        break;
                 }
             };
 
             peerConnection.oniceconnectionstatechange = () => {
-                console.log("ICE connection state changed:", peerConnection.iceConnectionState);
+                console.log('ICE Connection State Change:', {
+                    iceConnectionState: peerConnection.iceConnectionState,
+                    signalingState: peerConnection.signalingState,
+                    connectionState: peerConnection.connectionState
+                });
+            };
+
+            peerConnection.onicegatheringstatechange = () => {
+                console.log('ICE Gathering State Change:', peerConnection.iceGatheringState);
+            };
+
+            peerConnection.onsignalingstatechange = () => {
+                console.log('Signaling State Change:', peerConnection.signalingState);
             };
 
             return peerConnection;
@@ -749,6 +754,46 @@
                 }
             };
             document.body.appendChild(button);
+        }
+
+        function monitorAudioState(stream) {
+            const audioTracks = stream.getAudioTracks();
+            audioTracks.forEach(track => {
+                console.log('Audio track state:', {
+                    enabled: track.enabled,
+                    muted: track.muted,
+                    readyState: track.readyState,
+                    id: track.id
+                });
+
+                track.onended = () => {
+                    console.log('Audio track ended:', track.id);
+                    updateStatus('Audio track ended', true);
+                };
+
+                track.onmute = () => {
+                    console.log('Audio track muted:', track.id);
+                    document.getElementById('audioStatus').textContent = 'Audio status: Muted';
+                };
+
+                track.onunmute = () => {
+                    console.log('Audio track unmuted:', track.id);
+                    document.getElementById('audioStatus').textContent = 'Audio status: Active';
+                };
+            });
+        }
+
+        function updateCallStatus(state, peer = null) {
+            const statusMsg = peer ? `${state} with ${peer}` : state;
+            updateStatus(statusMsg);
+            
+            if (state === 'connected') {
+                document.getElementById('audioStatus').textContent = 'Audio status: Connected';
+                document.getElementById('connectionStatus').className = 'status success';
+            } else if (state === 'disconnected' || state === 'failed') {
+                document.getElementById('audioStatus').textContent = 'Audio status: Not connected';
+                document.getElementById('connectionStatus').className = 'status error';
+            }
         }
 
         // Call this after connection is established
