@@ -330,7 +330,31 @@
                     }
                 };
 
-                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const constraints = {
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        channelCount: 1,
+                        sampleRate: 48000,
+                        sampleSize: 16
+                    },
+                    video: false
+                };
+
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    console.log('Got local stream with tracks:', localStream.getTracks().map(t => ({
+                        kind: t.kind,
+                        enabled: t.enabled,
+                        muted: t.muted,
+                        settings: t.getSettings()
+                    })));
+                } catch (err) {
+                    console.error('Error getting local stream:', err);
+                    updateStatus('Error getting local stream: ' + err.message, true);
+                    return null;
+                }
                 document.getElementById('audioStatus').textContent = 'Audio status: Ready';
             } catch (err) {
                 updateStatus('Error: ' + err.message, true);
@@ -469,69 +493,69 @@
                 });
 
                 if (event.track.kind === 'audio') {
-                    // Create audio element for playback
-                    const audio = new Audio();
-                    audio.srcObject = event.streams[0];
-                    audio.autoplay = true;
-                    audio.playsInline = true;
+                    const audioElement = document.createElement('audio');
+                    audioElement.id = 'remoteAudio';
+                    audioElement.autoplay = true;
+                    audioElement.playsInline = true;
+                    audioElement.controls = true;
+                    document.body.appendChild(audioElement);
                     
-                    // Set up volume meter
-                    const volumeDiv = setupVolumeIndicator();
+                    // Create audio context and analyzer
                     const audioContext = new AudioContext();
                     const source = audioContext.createMediaStreamSource(event.streams[0]);
-                    const analyser = audioContext.createAnalyser();
-                    analyser.fftSize = 256;
-                    source.connect(analyser);
+                    const analyzer = audioContext.createAnalyser();
+                    analyzer.fftSize = 2048;
+                    source.connect(analyzer);
                     
-                    // Create a gain node for volume control
-                    const gainNode = audioContext.createGain();
-                    gainNode.gain.value = 1.0;
-                    source.connect(gainNode);
-                    gainNode.connect(audioContext.destination);
+                    // Create volume meter
+                    const volumeMeter = document.createElement('div');
+                    volumeMeter.id = 'volumeMeter';
+                    volumeMeter.style.width = '200px';
+                    volumeMeter.style.height = '20px';
+                    volumeMeter.style.border = '1px solid black';
+                    document.body.appendChild(volumeMeter);
                     
-                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    const volumeBar = document.createElement('div');
+                    volumeBar.style.width = '0%';
+                    volumeBar.style.height = '100%';
+                    volumeBar.style.backgroundColor = 'green';
+                    volumeMeter.appendChild(volumeBar);
+                    
+                    // Update volume meter
+                    const dataArray = new Uint8Array(analyzer.frequencyBinCount);
                     function updateVolume() {
-                        analyser.getByteFrequencyData(dataArray);
+                        analyzer.getByteFrequencyData(dataArray);
                         const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                        volumeDiv.textContent = `Input Level: ${Math.round(average)}`;
-                        volumeDiv.style.backgroundColor = average > 0 ? '#4CAF50' : '#fff';
+                        const volume = (average / 255) * 100;
+                        volumeBar.style.width = volume + '%';
                         requestAnimationFrame(updateVolume);
                     }
                     updateVolume();
+                    
+                    // Connect to audio element
+                    audioElement.srcObject = event.streams[0];
+                    
+                    // Add event listeners for debugging
+                    audioElement.onplay = () => console.log('Audio play event fired');
+                    audioElement.onplaying = () => console.log('Audio playing event fired');
+                    audioElement.onpause = () => console.log('Audio pause event fired');
+                    audioElement.onended = () => console.log('Audio ended event fired');
+                    audioElement.onerror = (e) => console.error('Audio error:', e);
 
-                    // Monitor track state changes
+                    // Monitor track state
                     event.track.onmute = () => {
                         console.log('Remote track muted:', event.track.id);
-                        gainNode.gain.value = 0;
+                        document.getElementById('audioStatus').textContent = 'Audio status: Remote track muted';
                     };
-                    
                     event.track.onunmute = () => {
                         console.log('Remote track unmuted:', event.track.id);
-                        gainNode.gain.value = 1.0;
+                        document.getElementById('audioStatus').textContent = 'Audio status: Remote track active';
+                        // Try playing when unmuted
+                        audioElement.play().catch(e => console.error('Play failed:', e));
                     };
-
-                    // Handle audio element events
-                    audio.onloadedmetadata = async () => {
-                        try {
-                            await audio.play();
-                            audio.volume = 1.0;
-                            console.log('Audio playback started:', {
-                                volume: audio.volume,
-                                muted: audio.muted,
-                                audioContextState: audioContext.state,
-                                gainValue: gainNode.gain.value
-                            });
-                        } catch (e) {
-                            console.error('Playback failed:', e);
-                            const playButton = document.createElement('button');
-                            playButton.textContent = 'Start Audio';
-                            playButton.onclick = async () => {
-                                await audioContext.resume();
-                                await audio.play();
-                                playButton.remove();
-                            };
-                            document.body.appendChild(playButton);
-                        }
+                    event.track.onended = () => {
+                        console.log('Remote track ended:', event.track.id);
+                        document.getElementById('audioStatus').textContent = 'Audio status: Remote track ended';
                     };
                 }
             };
@@ -573,14 +597,27 @@
                 const state = {
                     connectionState: peerConnection.connectionState,
                     iceConnectionState: peerConnection.iceConnectionState,
-                    signalingState: peerConnection.signalingState
+                    signalingState: peerConnection.signalingState,
+                    audioTransceivers: peerConnection.getTransceivers()
+                        .filter(t => t.receiver.track?.kind === 'audio')
+                        .map(t => ({
+                            currentDirection: t.currentDirection,
+                            direction: t.direction,
+                            trackEnabled: t.receiver.track?.enabled,
+                            trackMuted: t.receiver.track?.muted
+                        }))
                 };
                 console.log('Connection state change:', state);
 
+                // Update status based on connection state
                 switch (peerConnection.connectionState) {
                     case 'connected':
                         updateStatus(`Connected to ${remotePeerId}`);
-                        document.getElementById('audioStatus').textContent = 'Audio status: Connected';
+                        // Check audio tracks when connected
+                        const audioTracks = peerConnection.getReceivers()
+                            .filter(r => r.track?.kind === 'audio')
+                            .map(r => r.track);
+                        console.log('Active audio tracks:', audioTracks);
                         break;
                     case 'disconnected':
                     case 'failed':
