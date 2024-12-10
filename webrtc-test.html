@@ -621,6 +621,34 @@
                 console.log('Signaling State Change:', peerConnection.signalingState);
             };
 
+            peerConnection.onconnectionstatechange = () => {
+                const state = {
+                    connectionState: peerConnection.connectionState,
+                    iceConnectionState: peerConnection.iceConnectionState,
+                    signalingState: peerConnection.signalingState,
+                    iceGatheringState: peerConnection.iceGatheringState
+                };
+                console.log('Connection State Change:', state);
+                
+                if (peerConnection.connectionState === 'connected') {
+                    console.log('WebRTC connection established');
+                    updateCallStatus('connected', remotePeerId);
+                    
+                    // Start monitoring both local and remote audio
+                    const audioElement = document.getElementById('remoteAudio');
+                    if (audioElement && audioElement.srcObject) {
+                        monitorAudioState(audioElement.srcObject);
+                    }
+                    if (localStream) {
+                        monitorAudioState(localStream);
+                    }
+                } else if (peerConnection.connectionState === 'failed' || 
+                           peerConnection.connectionState === 'disconnected') {
+                    console.log('WebRTC connection failed or disconnected');
+                    updateCallStatus(peerConnection.connectionState);
+                }
+            };
+
             return peerConnection;
         }
 
