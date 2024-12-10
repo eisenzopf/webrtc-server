@@ -261,51 +261,27 @@
 
                             case "CallRequest":
                                 console.log("Received CallRequest message:", message);
-                                remotePeerId = message.from_peer;
                                 if (message.to_peers.includes(document.getElementById('peerId').value)) {
-                                    console.log("This peer is a target of the call");
-                                    const caller = message.from_peer;
-                                    console.log("Showing call alert for caller:", caller);
-                                    const accepted = await showCallAlert(caller);
-                                    console.log("Call was " + (accepted ? "accepted" : "rejected"));
-                                    
+                                    remotePeerId = message.from_peer;
+                                    updateStatus(`Incoming call from ${remotePeerId}`);
+                                    // Accept call and create peer connection
                                     sendSignal('CallResponse', {
                                         room_id: document.getElementById('roomId').value,
                                         from_peer: document.getElementById('peerId').value,
-                                        to_peer: caller,
-                                        accepted: accepted
+                                        to_peer: remotePeerId,
+                                        accepted: true
                                     });
-                                    
-                                    if (accepted) {
-                                        await setupPeerConnection();
-                                    }
-                                } else {
-                                    console.log("This peer is not a target of the call");
+                                    await setupPeerConnection();
                                 }
                                 break;
 
                             case "CallResponse":
-                                if (message.to_peer === document.getElementById('peerId').value) {
+                                if (message.to_peer === document.getElementById('peerId').value && message.accepted) {
                                     remotePeerId = message.from_peer;
-                                    if (message.accepted) {
-                                        if (!peerConnections[message.from_peer]) {
-                                            peerConnections[message.from_peer] = await setupPeerConnection();
-                                            const offer = await peerConnections[message.from_peer].createOffer();
-                                            await peerConnections[message.from_peer].setLocalDescription(offer);
-                                            
-                                            sendSignal('Offer', {
-                                                room_id: document.getElementById('roomId').value,
-                                                sdp: offer.sdp,
-                                                from_peer: document.getElementById('peerId').value,
-                                                to_peer: message.from_peer
-                                            });
-                                        }
-                                    } else {
-                                        updateStatus(`Peer ${message.from_peer} declined the call`);
-                                    }
-                                    activeCallRequests.delete(message.from_peer);
+                                    updateStatus(`Call accepted by ${remotePeerId}`);
+                                    // Create RTCPeerConnection and continue with the call setup
+                                    await setupPeerConnection();
                                 }
-                                remotePeerId = message.from_peer;
                                 break;
                         }
                     } catch (err) {
@@ -612,19 +588,24 @@
                 });
 
                 switch (peerConnection.iceConnectionState) {
+                    case 'checking':
+                        updateStatus('Checking connection...');
+                        break;
                     case 'connected':
                     case 'completed':
                         updateStatus(`Connected to ${remotePeerId}`);
                         document.getElementById('audioStatus').textContent = 'Audio status: Connected';
                         break;
-                    case 'failed':
-                        updateStatus('ICE connection failed', true);
-                        break;
                     case 'disconnected':
-                        updateStatus('ICE connection disconnected', true);
+                        updateStatus('Connection interrupted...', true);
                         break;
-                    case 'checking':
-                        updateStatus('Checking ICE connection...');
+                    case 'failed':
+                        updateStatus('Connection failed', true);
+                        document.getElementById('audioStatus').textContent = 'Audio status: Failed';
+                        break;
+                    case 'closed':
+                        updateStatus('Connection closed');
+                        document.getElementById('audioStatus').textContent = 'Audio status: Closed';
                         break;
                 }
             };
@@ -690,10 +671,18 @@
         }
 
         function updateStatus(message, isError = false) {
-            console.log('Status update:', message, isError);
+            console.log(`Status update (${new Date().toISOString()}):`, {
+                message,
+                isError,
+                peerConnection: peerConnection ? {
+                    iceConnectionState: peerConnection.iceConnectionState,
+                    connectionState: peerConnection.connectionState,
+                    signalingState: peerConnection.signalingState
+                } : null
+            });
             const status = document.getElementById('connectionStatus');
             status.textContent = message;
-            status.className = 'status ' + (isError ? 'error' : 'success');
+            status.className = isError ? 'error' : 'success';
         }
 
         async function endCall() {
