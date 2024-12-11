@@ -277,16 +277,43 @@ async function handleAnswerMessage(message) {
         }
 
         if (peerConnection.signalingState === "have-local-offer") {
-            console.log("Setting remote description (answer)");
-            await peerConnection.setRemoteDescription(new RTCSessionDescription({
+            // Create and set the remote description
+            const answerDesc = new RTCSessionDescription({
                 type: 'answer',
                 sdp: message.sdp
-            }));
+            });
+
+            // Wait for ICE gathering to complete before setting remote description
+            await new Promise((resolve) => {
+                if (peerConnection.iceGatheringState === 'complete') {
+                    resolve();
+                } else {
+                    peerConnection.onicegatheringstatechange = () => {
+                        if (peerConnection.iceGatheringState === 'complete') {
+                            resolve();
+                        }
+                    };
+                }
+            });
+
+            console.log("Setting remote description (answer):", answerDesc);
+            await peerConnection.setRemoteDescription(answerDesc);
+            
+            console.log("Remote description set successfully. Connection state:", {
+                iceConnectionState: peerConnection.iceConnectionState,
+                connectionState: peerConnection.connectionState,
+                signalingState: peerConnection.signalingState,
+                iceGatheringState: peerConnection.iceGatheringState
+            });
         } else {
             console.log("Ignoring answer - not in have-local-offer state, current state:", peerConnection.signalingState);
         }
     } catch (err) {
         console.error("Error handling answer:", err);
+        console.error("Error details:", err.message);
+        if (err.stack) {
+            console.error("Stack trace:", err.stack);
+        }
     }
 }
 

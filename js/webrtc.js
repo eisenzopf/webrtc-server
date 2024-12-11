@@ -127,9 +127,6 @@ function handleConnectionStateChange() {
 
 async function startCall() {
     try {
-        // Single peer connection to the server
-        await setupPeerConnection();
-        
         const selectedPeers = Array.from(document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked'))
             .map(cb => cb.value);
         
@@ -138,14 +135,19 @@ async function startCall() {
             return;
         }
 
-        // Send call request to server
+        // Setup connection with the server's media relay
+        await setupPeerConnection();
+        
+        // Send CallRequest to initiate server-relayed call
         sendSignal('CallRequest', {
             room_id: document.getElementById('roomId').value,
             from_peer: document.getElementById('peerId').value,
             to_peers: selectedPeers
         });
-        
-        updateStatus(`Joining call with ${selectedPeers.length} peer(s)...`);
+
+        // The server will handle creating the media relay and routing
+        // We'll wait for the server to send us back the offer
+        updateStatus('Initiating server-relayed call...');
     } catch (err) {
         console.error('Error starting call:', err);
         updateStatus('Failed to start call: ' + err.message, true);

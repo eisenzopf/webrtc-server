@@ -96,20 +96,29 @@ impl MessageHandler {
     async fn handle_offer(&self, room_id: &str, from_peer: &str, to_peer: &str, sdp: &str) -> Result<()> {
         let rooms = self.rooms.read().await;
         if let Some(room) = rooms.get(room_id) {
-            // Get the media relay for the receiving peer
             if let Some(relay) = room.get_peer_relay(to_peer) {
                 // Set the remote description on the relay's peer connection
                 let desc = RTCSessionDescription::offer(sdp.to_string())?;
                 relay.peer_connection.set_remote_description(desc).await?;
 
-                // Create answer
+                // Create answer with proper configuration
                 let answer = relay.peer_connection.create_answer(None).await?;
+                
+                // Important: Set local description before sending answer
                 relay.peer_connection.set_local_description(answer.clone()).await?;
+
+                // Wait for ICE gathering to complete
+                let mut gathering_complete = relay.peer_connection.gathering_complete_promise().await;
+                let _ = gathering_complete.recv().await;
+
+                // Get the complete local description with ICE candidates
+                let local_desc = relay.peer_connection.local_description().await
+                    .ok_or_else(|| Error::Peer("No local description available".to_string()))?;
 
                 // Send answer back through signaling
                 let answer_msg = SignalingMessage::Answer {
                     room_id: room_id.to_string(),
-                    sdp: answer.sdp,
+                    sdp: local_desc.sdp,
                     from_peer: to_peer.to_string(),
                     to_peer: from_peer.to_string(),
                 };
@@ -142,7 +151,7 @@ impl MessageHandler {
         let caller_relay = self.get_peer_relay(&from_peer).await?
             .ok_or_else(|| Error::Peer(format!("Caller {} not found", from_peer)))?;
 
-        // Create offer
+        // Create offer on the caller's relay
         let offer = caller_relay.peer_connection.create_offer(None).await?;
         caller_relay.peer_connection.set_local_description(offer.clone()).await?;
 
