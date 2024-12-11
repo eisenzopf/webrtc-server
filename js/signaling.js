@@ -11,6 +11,13 @@ async function connect() {
             return;
         }
 
+        // Generate random peer ID if not set
+        const peerIdInput = document.getElementById('peerId');
+        if (!peerIdInput.value) {
+            peerIdInput.value = 'peer_' + Math.random().toString(36).substr(2, 9);
+            console.log('Generated peer ID:', peerIdInput.value);
+        }
+
         const serverAddress = document.getElementById('stunServer').value;
         console.log(`Attempting connection to WebSocket server: ws://${serverAddress}:8080`);
         
