@@ -69,9 +69,16 @@ function handleWebSocketOpen() {
     updateStatus('Connected to signaling server');
     const roomId = document.getElementById('roomId').value;
     const peerId = document.getElementById('peerId').value;
+    
+    // Join room
     sendSignal('Join', {
         room_id: roomId,
         peer_id: peerId
+    });
+    
+    // Request initial peer list
+    sendSignal('RequestPeerList', {
+        room_id: roomId
     });
 }
 
@@ -87,24 +94,8 @@ async function handleWebSocketMessage(event) {
         
         switch (message.message_type) {
             case "PeerList":
-                const currentPeerId = document.getElementById('peerId').value;
-                const otherPeers = message.peers.filter(p => p !== currentPeerId);
-                
-                // Check if any peers we were connected to are no longer in the list
-                if (peerConnection && remotePeerId && !otherPeers.includes(remotePeerId)) {
-                    console.log(`Peer ${remotePeerId} disconnected`);
-                    cleanupConnection();
-                    updateStatus('Peer disconnected');
-                }
-                
-                // Update the peer list UI
-                const peerListDiv = document.getElementById('selectablePeerList');
-                peerListDiv.innerHTML = otherPeers.map(peerId => `
-                    <div class="peer-item">
-                        <input type="checkbox" id="peer_${peerId}" value="${peerId}">
-                        <label for="peer_${peerId}">${peerId}</label>
-                    </div>
-                `).join('');
+                console.log("Received PeerList message:", message);
+                handlePeerListMessage(message);
                 break;
             case "Offer":
                 await handleOfferMessage(message);

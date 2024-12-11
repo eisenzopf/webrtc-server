@@ -85,5 +85,10 @@
     <script src="js/webrtc.js"></script>
     <script src="js/signaling.js"></script>
     <script src="js/ui.js"></script>
+    <script>
+        window.addEventListener('load', async () => {
+            await checkMediaDevices();
+        });
+    </script>
 </body>
 </html> 

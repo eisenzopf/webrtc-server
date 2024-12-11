@@ -35,7 +35,7 @@ use webrtc::{
 use crate::media::{MediaRelayManager, MediaRelay};
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::track::track_local::TrackLocal;
-use log::info;
+use log::{info, error};
 
 pub type WebSocketSender = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
@@ -81,6 +81,15 @@ impl MessageHandler {
             .or_insert_with(Vec::new);
         room_peers.push((peer_id.clone(), ws_sender));
 
+        let peer_ids: Vec<String> = room_peers.iter().map(|(id, _)| id.clone()).collect();
+        let peer_list_msg = SignalingMessage::PeerList { peers: peer_ids };
+
+        for (_, sender) in room_peers {
+            let msg_str = serde_json::to_string(&peer_list_msg)?;
+            let mut sender_guard = sender.lock().await;
+            let _ = sender_guard.send(Message::Text(msg_str)).await;
+        }
+
         Ok(())
     }
 
@@ -118,6 +127,36 @@ impl MessageHandler {
                 relay.peer_connection.add_ice_candidate(candidate.clone()).await?;
             }
         }
+        Ok(())
+    }
+
+    async fn handle_call_request(
+        &self,
+        room_id: String,
+        from_peer: String,
+        to_peers: Vec<String>
+    ) -> Result<()> {
+        info!("Handling call request from {} to {:?}", from_peer, to_peers);
+        
+        // Get the caller's relay
+        let caller_relay = self.get_peer_relay(&from_peer).await?
+            .ok_or_else(|| Error::Peer(format!("Caller {} not found", from_peer)))?;
+
+        // Create offer
+        let offer = caller_relay.peer_connection.create_offer(None).await?;
+        caller_relay.peer_connection.set_local_description(offer.clone()).await?;
+
+        // Send offer to each target peer
+        for peer_id in to_peers {
+            let offer_msg = SignalingMessage::Offer {
+                room_id: room_id.clone(),
+                sdp: offer.sdp.clone(),
+                from_peer: from_peer.clone(),
+                to_peer: peer_id.clone(),
+            };
+            self.send_to_peer(&peer_id, &offer_msg).await?;
+        }
+
         Ok(())
     }
 
@@ -175,6 +214,9 @@ impl MessageHandler {
             }
             SignalingMessage::EndCall { .. } => {
                 Ok(())
+            }
+            SignalingMessage::CallRequest { room_id, from_peer, to_peers } => {
+                self.handle_call_request(room_id, from_peer, to_peers).await
             }
             _ => Ok(())
         }
@@ -236,7 +278,7 @@ impl MessageHandler {
     async fn monitor_connection_state(&self, peer_id: &str, relay: &MediaRelay) {
         let pc = relay.peer_connection.clone();
         let peer_id_state = peer_id.to_string();
-        let peer_id_ice = peer_id.to_string(); // Create separate clone for ice handler
+        let peer_id_ice = peer_id.to_string();
 
         pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
             let peer_id = peer_id_state.clone();
@@ -245,16 +287,27 @@ impl MessageHandler {
                     "Peer {} connection state changed to {:?}",
                     peer_id, s
                 );
+                match s {
+                    RTCPeerConnectionState::Connected => {
+                        info!("Peer {} successfully connected", peer_id);
+                    }
+                    RTCPeerConnectionState::Failed => {
+                        error!("Peer {} connection failed", peer_id);
+                    }
+                    _ => {}
+                }
             })
         }));
 
-        pc.on_ice_connection_state_change(Box::new(move |s: RTCIceConnectionState| {
+        pc.on_ice_candidate(Box::new(move |c| {
             let peer_id = peer_id_ice.clone();
             Box::pin(async move {
-                info!(
-                    "Peer {} ICE connection state changed to {:?}",
-                    peer_id, s
-                );
+                if let Some(c) = c {
+                    info!(
+                        "Peer {} generated ICE candidate: {:?}",
+                        peer_id, c
+                    );
+                }
             })
         }));
     }

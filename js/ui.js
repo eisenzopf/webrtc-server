@@ -27,16 +27,20 @@ function updateCallStatus(state, peer = null) {
 }
 
 function handlePeerListMessage(message) {
+    console.log("Handling peer list update:", message);
     const currentPeerId = document.getElementById('peerId').value;
     const otherPeers = message.peers.filter(p => p !== currentPeerId);
-    const peerListDiv = document.getElementById('selectablePeerList');
+    console.log("Filtered peers (excluding self):", otherPeers);
     
+    const peerListDiv = document.getElementById('selectablePeerList');
     peerListDiv.innerHTML = otherPeers.map(peerId => `
         <div class="peer-item">
             <input type="checkbox" id="peer_${peerId}" value="${peerId}">
             <label for="peer_${peerId}">${peerId}</label>
         </div>
     `).join('');
+    
+    console.log("Updated peer list HTML");
 }
 
 function toggleMute() {

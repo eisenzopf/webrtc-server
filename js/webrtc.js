@@ -311,18 +311,16 @@ async function setupPeerConnection() {
 
         const configuration = {
             iceServers: [
-                { urls: stunUrl }
+                { 
+                    urls: stunUrl,
+                    username: "",
+                    credential: ""
+                }
             ],
-            iceTransportPolicy: 'all',
-            bundlePolicy: 'max-bundle',
-            rtcpMuxPolicy: 'require',
-            iceCandidatePoolSize: 10,
-            // Force usage of relay
             iceTransportPolicy: 'relay',
-            // Ensure we're using the server as the media relay
+            bundlePolicy: 'balanced',
             rtcpMuxPolicy: 'require',
-            // Enable BUNDLE to reduce the number of ports needed
-            bundlePolicy: 'max-bundle'
+            iceCandidatePoolSize: 10
         };
 
         // Only create a new connection if one doesn't exist or is closed

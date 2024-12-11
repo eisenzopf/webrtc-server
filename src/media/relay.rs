@@ -10,6 +10,9 @@ use log::{debug, info, warn, error};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use webrtc::stats::StatsReportType;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
+use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
+use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
 
 #[derive(Debug, Clone)]
 pub struct MediaRelay {
@@ -85,10 +88,14 @@ impl MediaRelayManager {
         let config = RTCConfiguration {
             ice_servers: vec![
                 RTCIceServer {
-                    urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+                    urls: vec![format!("stun:{}:{}", "192.168.1.68", "3478")],
                     ..Default::default()
                 },
             ],
+            ice_transport_policy: RTCIceTransportPolicy::Relay,
+            bundle_policy: RTCBundlePolicy::MaxBundle,
+            rtcp_mux_policy: RTCRtcpMuxPolicy::Require,
+            ice_candidate_pool_size: 10,
             ..Default::default()
         };
 
