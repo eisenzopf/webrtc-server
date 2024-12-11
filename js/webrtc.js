@@ -319,7 +319,6 @@ async function setupPeerConnection() {
                     credential: ""
                 }
             ],
-            iceTransportPolicy: 'relay',
             bundlePolicy: 'balanced',
             rtcpMuxPolicy: 'require',
             iceCandidatePoolSize: 10

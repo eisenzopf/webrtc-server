@@ -13,6 +13,7 @@ use webrtc::stats::StatsReportType;
 use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
 use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
+use crate::signaling::SignalingMessage;
 
 #[derive(Debug, Clone)]
 pub struct MediaRelay {
@@ -105,6 +106,8 @@ impl MediaRelayManager {
         // Set up handlers for the peer connection
         let pc = Arc::new(peer_connection);
         let pc_clone = pc.clone();
+        let peer_id_clone = peer_id.clone();
+        let handler_clone = handler.clone();
 
         // Handle incoming tracks
         pc.on_track(Box::new(move |track, _, _| {
@@ -135,6 +138,27 @@ impl MediaRelayManager {
                     error!("Failed to add {} track: {}", track_type, e);
                 } else {
                     debug!("Successfully added {} track to peer connection", track_type);
+                }
+            })
+        }));
+
+        pc.on_ice_candidate(Box::new(move |c| {
+            let peer_id = peer_id_clone.clone();
+            let handler = handler_clone.clone();
+            
+            Box::pin(async move {
+                if let Some(c) = c {
+                    // Send the ICE candidate through signaling
+                    let candidate_msg = SignalingMessage::IceCandidate {
+                        room_id: room_id.clone(),
+                        candidate: serde_json::to_string(&c).unwrap(),
+                        from_peer: peer_id.clone(),
+                        to_peer: remote_peer_id.clone(),
+                    };
+                    
+                    if let Err(e) = handler.send_to_peer(&remote_peer_id, &candidate_msg).await {
+                        error!("Failed to send ICE candidate: {}", e);
+                    }
                 }
             })
         }));
