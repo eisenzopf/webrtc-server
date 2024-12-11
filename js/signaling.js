@@ -342,29 +342,54 @@ async function handleIceCandidateMessage(message) {
 
 async function setupPeerConnection() {
     try {
-        // Request permissions first
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: true
-        });
-        
-        // Only proceed with connection setup after permissions granted
-        peerConnection = new RTCPeerConnection(configuration);
-        
-        // Add tracks from the stream to the connection
-        stream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, stream);
-        });
+        // Get STUN server configuration from input fields
+        const stunServer = document.getElementById('stunServer').value || '127.0.0.1';
+        const stunPort = document.getElementById('stunPort').value || '3478';
+        const stunUrl = `stun:${stunServer}:${stunPort}`;
 
-        // Set up local video preview
-        const localVideo = document.getElementById('localVideo');
-        if (localVideo) {
-            localVideo.srcObject = stream;
+        const configuration = {
+            iceServers: [
+                { urls: stunUrl },
+                { urls: 'stun:stun.l.google.com:19302' }  // Fallback public STUN server
+            ],
+            iceTransportPolicy: 'all',
+            bundlePolicy: 'max-bundle',
+            rtcpMuxPolicy: 'require',
+            iceCandidatePoolSize: 10
+        };
+
+        // Only create a new connection if one doesn't exist or is closed
+        if (peerConnection && peerConnection.connectionState !== 'closed') {
+            console.log("Peer connection already exists");
+            return peerConnection;
         }
 
-        // Rest of your existing peer connection setup...
-        setupPeerConnectionHandlers();
-        
+        // Use existing stream if available
+        if (!localStream) {
+            console.log("Getting user media");
+            localStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
+        }
+
+        console.log("Creating new RTCPeerConnection with configuration:", configuration);
+        peerConnection = new RTCPeerConnection(configuration);
+
+        // Add connection monitoring
+        peerConnection.onconnectionstatechange = handleConnectionStateChange;
+        peerConnection.oniceconnectionstatechange = handleIceConnectionStateChange;
+        peerConnection.ontrack = handleTrackEvent;
+        peerConnection.onicecandidate = handleIceCandidate;
+
+        // Add local stream tracks to the connection
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+
         return peerConnection;
     } catch (err) {
         console.error('Error setting up peer connection:', err);
