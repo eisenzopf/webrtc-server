@@ -121,16 +121,33 @@ async function handleWebSocketMessage(event) {
             case "CallRequest":
                 console.log("Received CallRequest message:", message);
                 if (message.to_peers.includes(document.getElementById('peerId').value)) {
-                    remotePeerId = message.from_peer;
-                    updateStatus(`Incoming call from ${remotePeerId}`);
-                    // Accept call and create peer connection
-                    sendSignal('CallResponse', {
-                        room_id: document.getElementById('roomId').value,
-                        from_peer: document.getElementById('peerId').value,
-                        to_peer: remotePeerId,
-                        accepted: true
-                    });
-                    await setupPeerConnection();
+                    try {
+                        // First check/request permissions
+                        await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                        
+                        remotePeerId = message.from_peer;
+                        updateStatus(`Incoming call from ${remotePeerId}`);
+                        
+                        // Only send acceptance after permissions granted
+                        sendSignal('CallResponse', {
+                            room_id: document.getElementById('roomId').value,
+                            from_peer: document.getElementById('peerId').value,
+                            to_peer: remotePeerId,
+                            accepted: true
+                        });
+                        await setupPeerConnection();
+                    } catch (err) {
+                        console.error('Permission denied or error accessing media devices:', err);
+                        // Inform the caller that we can't accept
+                        sendSignal('CallResponse', {
+                            room_id: document.getElementById('roomId').value,
+                            from_peer: document.getElementById('peerId').value,
+                            to_peer: message.from_peer,
+                            accepted: false,
+                            reason: 'Failed to access media devices'
+                        });
+                        updateStatus('Failed to access camera/microphone. Please grant permissions and try again.', true);
+                    }
                 }
                 break;
             case "CallResponse":
@@ -320,6 +337,39 @@ async function handleIceCandidateMessage(message) {
         await peerConnection.addIceCandidate(candidate);
     } catch (err) {
         console.error('Error adding ICE candidate:', err);
+    }
+}
+
+async function setupPeerConnection() {
+    try {
+        // Request permissions first
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+        });
+        
+        // Only proceed with connection setup after permissions granted
+        peerConnection = new RTCPeerConnection(configuration);
+        
+        // Add tracks from the stream to the connection
+        stream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, stream);
+        });
+
+        // Set up local video preview
+        const localVideo = document.getElementById('localVideo');
+        if (localVideo) {
+            localVideo.srcObject = stream;
+        }
+
+        // Rest of your existing peer connection setup...
+        setupPeerConnectionHandlers();
+        
+        return peerConnection;
+    } catch (err) {
+        console.error('Error setting up peer connection:', err);
+        updateStatus('Failed to access camera/microphone. Please grant permissions and try again.', true);
+        throw err;
     }
 }
 
