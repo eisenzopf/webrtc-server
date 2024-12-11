@@ -349,8 +349,7 @@ async function setupPeerConnection() {
 
         const configuration = {
             iceServers: [
-                { urls: stunUrl },
-                { urls: 'stun:stun.l.google.com:19302' }  // Fallback public STUN server
+                { urls: stunUrl }
             ],
             iceTransportPolicy: 'all',
             bundlePolicy: 'max-bundle',
