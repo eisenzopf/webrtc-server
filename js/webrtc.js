@@ -5,58 +5,22 @@ let hasCamera = false;
 let enableVideo = false;
 
 function handleTrackEvent(event) {
-    console.log('Track received:', {
-        kind: event.track.kind,
-        readyState: event.track.readyState,
-        enabled: event.track.enabled,
-        muted: event.track.muted,
-        id: event.track.id
-    });
-
+    console.log('Received track from server:', event.track.kind);
+    
     if (event.track.kind === 'audio') {
-        let audioElement = document.getElementById('remoteAudio');
-        if (!audioElement) {
-            audioElement = document.createElement('audio');
-            audioElement.id = 'remoteAudio';
-            audioElement.autoplay = true;
-            audioElement.playsInline = true;
-            audioElement.controls = true;
-            document.body.appendChild(audioElement);
+        const audioElement = document.getElementById('remoteAudio') || createRemoteAudio();
+        if (!audioElement.srcObject) {
+            audioElement.srcObject = new MediaStream();
         }
-
-        const stream = new MediaStream([event.track]);
-        audioElement.srcObject = stream;
-        
-        audioElement.onerror = (e) => console.error('Audio element error:', e);
-        
-        audioElement.onplaying = () => console.log('Audio is now playing');
-        
-        audioElement.muted = false;
+        audioElement.srcObject.addTrack(event.track);
     } else if (event.track.kind === 'video') {
         const videoElement = document.getElementById('remoteVideo');
-        if (!videoElement) {
-            videoElement = document.createElement('video');
-            videoElement.id = 'remoteVideo';
-            videoElement.autoplay = true;
-            videoElement.playsInline = true;
-            videoElement.controls = true;
-            videoElement.width = 320;
-            videoElement.height = 240;
-            document.body.appendChild(videoElement);
+        if (!videoElement.srcObject) {
+            videoElement.srcObject = new MediaStream();
         }
-
-        const stream = new MediaStream([event.track]);
-        videoElement.srcObject = stream;
-        
-        videoElement.play()
-            .then(() => console.log('Initial video playback started'))
-            .catch(e => console.error('Initial play failed:', e));
-
-        event.track.onunmute = () => {
-            videoElement.play()
-                .then(() => console.log('Video playback started after unmute'))
-                .catch(e => console.error('Play after unmute failed:', e));
-        };
+        videoElement.srcObject.addTrack(event.track);
+        videoElement.style.display = 'block';
+        console.log('Added video track to remote video element');
     }
 }
 
@@ -150,41 +114,42 @@ function handleConnectionStateChange() {
         signalingState: peerConnection.signalingState
     });
 
-    // Check audio tracks
+    // Check all tracks
     const receivers = peerConnection.getReceivers();
     receivers.forEach(receiver => {
-        if (receiver.track.kind === 'audio') {
-            console.log('Audio receiver track:', {
-                enabled: receiver.track.enabled,
-                muted: receiver.track.muted,
-                readyState: receiver.track.readyState
-            });
-        }
+        console.log(`${receiver.track.kind} receiver track:`, {
+            enabled: receiver.track.enabled,
+            muted: receiver.track.muted,
+            readyState: receiver.track.readyState
+        });
     });
 }
 
 async function startCall() {
-    // Prevent multiple calls while one is being established
-    if (peerConnection && peerConnection.connectionState !== 'closed') {
-        console.log("Call already in progress");
-        return;
-    }
+    try {
+        // Single peer connection to the server
+        await setupPeerConnection();
+        
+        const selectedPeers = Array.from(document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked'))
+            .map(cb => cb.value);
+        
+        if (selectedPeers.length === 0) {
+            updateStatus('Please select at least one peer to call', true);
+            return;
+        }
 
-    const selectedPeers = Array.from(document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked'))
-        .map(cb => cb.value);
-    
-    if (selectedPeers.length === 0) {
-        updateStatus('Please select at least one peer to call', true);
-        return;
+        // Send call request to server
+        sendSignal('CallRequest', {
+            room_id: document.getElementById('roomId').value,
+            from_peer: document.getElementById('peerId').value,
+            to_peers: selectedPeers
+        });
+        
+        updateStatus(`Joining call with ${selectedPeers.length} peer(s)...`);
+    } catch (err) {
+        console.error('Error starting call:', err);
+        updateStatus('Failed to start call: ' + err.message, true);
     }
-
-    sendSignal('CallRequest', {
-        room_id: document.getElementById('roomId').value,
-        from_peer: document.getElementById('peerId').value,
-        to_peers: selectedPeers
-    });
-    
-    updateStatus(`Calling ${selectedPeers.length} peer(s)...`);
 }
 
 async function endCall() {
@@ -278,9 +243,14 @@ async function renegotiateMedia() {
                 noiseSuppression: true,
                 autoGainControl: true
             },
-            video: enableVideo
+            video: enableVideo ? {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 }
+            } : false
         };
 
+        console.log('Requesting media with constraints:', constraints);
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         
         // Replace all tracks in the peer connection
@@ -288,15 +258,25 @@ async function renegotiateMedia() {
         const tracks = localStream.getTracks();
         
         for (const track of tracks) {
+            console.log(`Processing ${track.kind} track for renegotiation`);
             const sender = senders.find(s => s.track && s.track.kind === track.kind);
             if (sender) {
-                sender.replaceTrack(track);
+                console.log(`Replacing existing ${track.kind} track`);
+                await sender.replaceTrack(track);
             } else {
+                console.log(`Adding new ${track.kind} track`);
                 peerConnection.addTrack(track, localStream);
             }
         }
 
-        // Update UI
+        // Remove any senders that no longer have corresponding tracks
+        for (const sender of senders) {
+            if (!localStream.getTracks().some(track => track.kind === sender.track?.kind)) {
+                console.log(`Removing ${sender.track?.kind} sender`);
+                peerConnection.removeTrack(sender);
+            }
+        }
+
         updateVideoUI();
     } catch (err) {
         console.error('Error renegotiating media:', err);
@@ -331,13 +311,18 @@ async function setupPeerConnection() {
 
         const configuration = {
             iceServers: [
-                { urls: stunUrl },
-                { urls: 'stun:stun.l.google.com:19302' }  // Fallback public STUN server
+                { urls: stunUrl }
             ],
             iceTransportPolicy: 'all',
             bundlePolicy: 'max-bundle',
             rtcpMuxPolicy: 'require',
-            iceCandidatePoolSize: 10
+            iceCandidatePoolSize: 10,
+            // Force usage of relay
+            iceTransportPolicy: 'relay',
+            // Ensure we're using the server as the media relay
+            rtcpMuxPolicy: 'require',
+            // Enable BUNDLE to reduce the number of ports needed
+            bundlePolicy: 'max-bundle'
         };
 
         // Only create a new connection if one doesn't exist or is closed
@@ -353,7 +338,11 @@ async function setupPeerConnection() {
                 noiseSuppression: true,
                 autoGainControl: true
             },
-            video: enableVideo
+            video: enableVideo ? {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 }
+            } : false
         };
 
         // Get user media with logging

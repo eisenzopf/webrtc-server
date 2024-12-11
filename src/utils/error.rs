@@ -38,4 +38,10 @@ impl From<webrtc::Error> for Error {
     }
 }
 
+impl From<tokio_tungstenite::tungstenite::Error> for Error {
+    fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        Error::WebSocket(err)
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>; 

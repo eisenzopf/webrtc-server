@@ -5,6 +5,12 @@ use std::sync::Arc;
 use tokio_tungstenite::accept_async;
 use futures_util::{StreamExt, SinkExt};
 use log::{info, warn, error, debug};
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use serde_json::json;
+use warp::{Filter, Reply};
+use crate::media::MediaRelayManager;
+use warp::reject;
 
 pub struct SignalingServer {
     address: String,
@@ -12,15 +18,15 @@ pub struct SignalingServer {
 }
 
 impl SignalingServer {
-    pub fn new(address: &str) -> Self {
-        info!("Creating new SignalingServer instance on {}", address);
+    pub fn new(handler: Arc<MessageHandler>) -> Self {
+        info!("Creating new SignalingServer instance");
         Self {
-            address: address.to_string(),
-            handler: Arc::new(MessageHandler::new()),
+            address: "0.0.0.0:8080".to_string(), // Changed from 127.0.0.1 to 0.0.0.0
+            handler,
         }
     }
 
-    pub async fn start(&self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         info!("Starting server on {}", self.address);
         let listener = TcpListener::bind(&self.address).await
             .map_err(|e| {
@@ -65,8 +71,49 @@ impl SignalingServer {
         let (ws_sender, mut ws_receiver) = ws_stream.split();
         let ws_sender = Arc::new(tokio::sync::Mutex::new(ws_sender));
         
-        let mut current_peer_id = None;
-        let mut current_room_id = None;
+        let mut current_peer_id: Option<String> = None;
+        let mut current_room_id: Option<String> = None;
+
+        // Set up media relay handlers
+        if let Some(peer_id) = &current_peer_id {
+            if let Some(relay) = handler.get_peer_relay(peer_id).await? {
+                let relay_clone = relay.clone();
+                let handler_clone = handler.clone();
+                let peer_id_clone = peer_id.clone();
+
+                // Handle incoming tracks
+                relay.peer_connection.on_track(Box::new(move |track, _, _| {
+                    let relay = relay_clone.clone();
+                    let handler = handler_clone.clone();
+                    let peer_id = peer_id_clone.clone();
+                    
+                    Box::pin(async move {
+                        // Create a new local track for relaying based on track type
+                        let track_id = match track.kind() {
+                            RTPCodecType::Audio => format!("audio-relay-{}", track.stream_id()),
+                            RTPCodecType::Video => format!("video-relay-{}", track.stream_id()),
+                            _ => {
+                                error!("Unsupported track type: {:?}", track.kind());
+                                return;
+                            }
+                        };
+
+                        debug!("Creating new {} relay track: {}", track.kind(), track_id);
+                        
+                        let local_track = Arc::new(TrackLocalStaticRTP::new(
+                            track.codec().capability,
+                            track_id,
+                            track.stream_id(),
+                        ));
+
+                        // Forward this track to all other peers in the room
+                        if let Err(e) = handler.broadcast_track(&peer_id, local_track).await {
+                            error!("Failed to broadcast {} track: {}", track.kind(), e);
+                        }
+                    })
+                }));
+            }
+        }
 
         while let Some(msg) = ws_receiver.next().await {
             match msg {
@@ -77,8 +124,6 @@ impl SignalingServer {
                             handler.handle_message(
                                 signal_msg,
                                 ws_sender.clone(),
-                                &mut current_peer_id,
-                                &mut current_room_id,
                             ).await?;
                         }
                     }
@@ -92,4 +137,56 @@ impl SignalingServer {
 
         Ok(())
     }
+}
+
+pub async fn run_debug_server(media_relay: Arc<MediaRelayManager>) {
+    let media_stats = warp::path!("debug" / "media-stats")
+        .and(warp::get())
+        .and(with_media_relay(media_relay.clone()))
+        .and_then(|relay: Arc<MediaRelayManager>| async move {
+            match handle_media_stats_internal(relay).await {
+                Ok(response) => Ok(warp::reply::json(&response)),
+                Err(e) => Err(warp::reject::custom(ServerError(e.to_string())))
+            }
+        });
+
+    let routes = media_stats;
+
+    warp::serve(routes)
+        .run(([0, 0, 0, 0], 8081))
+        .await;
+}
+
+// Add this struct for custom error handling
+#[derive(Debug)]
+struct ServerError(String);
+
+impl reject::Reject for ServerError {}
+
+async fn handle_media_stats_internal(media_relay: Arc<MediaRelayManager>) -> Result<Vec<serde_json::Value>> {
+    let mut stats = Vec::new();
+    let relays = media_relay.get_relays().await?;
+    
+    for (peer_id, relay) in relays {
+        if let Ok(relay_stats) = relay.get_stats().await {
+            stats.push(json!({
+                "peer_id": peer_id,
+                "stats": {
+                    "packets_received": relay_stats.packets_received,
+                    "packets_sent": relay_stats.packets_sent,
+                    "bytes_received": relay_stats.bytes_received,
+                    "bytes_sent": relay_stats.bytes_sent,
+                    "last_updated": relay_stats.last_updated.elapsed().as_secs()
+                }
+            }));
+        }
+    }
+    
+    Ok(stats)
+}
+
+fn with_media_relay(
+    media_relay: Arc<MediaRelayManager>,
+) -> impl Filter<Extract = (Arc<MediaRelayManager>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || media_relay.clone())
 } 

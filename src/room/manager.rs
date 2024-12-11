@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::signaling::PeerConnection;
+use crate::media::MediaRelay;
+use webrtc::peer_connection::RTCPeerConnection;
 
 pub struct RoomManager {
     rooms: Arc<RwLock<HashMap<String, Room>>>,
@@ -49,7 +51,8 @@ impl RoomManager {
     pub async fn add_peer_to_room(
         &self,
         room_id: &str,
-        peer_connection: crate::signaling::PeerConnection,
+        peer_id: String,
+        peer_connection: PeerConnection,
     ) -> Result<()> {
         let mut rooms = self.rooms.write().await;
         let room = rooms
@@ -60,7 +63,35 @@ impl RoomManager {
             return Err(Error::Room("Room is full".to_string()));
         }
 
-        room.peers.push(peer_connection);
+        // Create API and configuration for the peer connection
+        let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
+        media_engine.register_default_codecs()?;
+
+        let api = webrtc::api::APIBuilder::new()
+            .with_media_engine(media_engine)
+            .build();
+
+        let config = webrtc::peer_connection::configuration::RTCConfiguration {
+            ice_servers: vec![
+                webrtc::ice_transport::ice_server::RTCIceServer {
+                    urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        // Create the peer connection
+        let peer_connection = api.new_peer_connection(config).await?;
+
+        let media_relay = MediaRelay {
+            peer_connection: Arc::new(peer_connection),
+            audio_track: None,
+            video_track: None,
+            peer_id: peer_id.clone(),
+        };
+
+        room.peers.push((peer_id, media_relay));
         Ok(())
     }
 

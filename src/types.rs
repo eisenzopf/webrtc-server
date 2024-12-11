@@ -84,6 +84,7 @@ impl Default for SignalingMessage {
 pub struct MediaRelay {
     pub peer_connection: Arc<RTCPeerConnection>,
     pub audio_track: Option<Arc<TrackLocalStaticRTP>>,
+    pub video_track: Option<Arc<TrackLocalStaticRTP>>,
     pub peer_id: String,
 }
 

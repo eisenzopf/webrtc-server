@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+use crate::utils::Error;
 
 #[derive(Debug, Clone)]
 pub struct MediaSettings {
@@ -22,13 +23,42 @@ pub enum MediaType {
 #[derive(Debug, Clone)]
 pub struct Room {
     pub id: String,
-    pub peers: Vec<PeerConnection>,
+    pub peers: Vec<(String, MediaRelay)>,
     pub media_settings: MediaSettings,
-    pub media_relays: HashMap<String, MediaRelay>,
     pub recording_enabled: bool,
-    pub connected_pairs: HashSet<(String, String)>,
-    pub peer_connections: HashMap<String, Arc<RTCPeerConnection>>,
-    pub media_tracks: HashMap<String, Vec<Arc<TrackLocalStaticRTP>>>,
+}
+
+impl Room {
+    pub fn add_peer(&mut self, peer_id: String, relay: MediaRelay) -> Result<(), Error> {
+        if self.peers.len() >= self.media_settings.max_participants {
+            return Err(Error::Room("Room is full".to_string()));
+        }
+        self.peers.push((peer_id, relay));
+        Ok(())
+    }
+
+    pub fn get_peer_relay(&self, peer_id: &str) -> Option<&MediaRelay> {
+        self.peers.iter()
+            .find(|(id, _)| id == peer_id)
+            .map(|(_, relay)| relay)
+    }
+
+    pub fn remove_peer(&mut self, peer_id: &str) {
+        self.peers.retain(|(id, _)| id != peer_id);
+    }
+
+    pub async fn broadcast_track(&self, from_peer: &str, track: Arc<TrackLocalStaticRTP>) -> Result<(), Error> {
+        for (peer_id, relay) in &self.peers {
+            if peer_id != from_peer {
+                relay.peer_connection.add_track(track.clone()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn has_peer(&self, peer_id: &str) -> bool {
+        self.peers.iter().any(|(id, _)| id == peer_id)
+    }
 }
 
 impl Default for MediaSettings {
@@ -47,11 +77,7 @@ impl Default for Room {
             id: String::new(),
             peers: Vec::new(),
             media_settings: MediaSettings::default(),
-            media_relays: HashMap::new(),
             recording_enabled: false,
-            connected_pairs: HashSet::new(),
-            peer_connections: HashMap::new(),
-            media_tracks: HashMap::new(),
         }
     }
 } 
