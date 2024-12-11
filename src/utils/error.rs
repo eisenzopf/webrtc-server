@@ -32,4 +32,10 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+impl From<webrtc::Error> for Error {
+    fn from(error: webrtc::Error) -> Self {
+        Error::Media(error.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>; 

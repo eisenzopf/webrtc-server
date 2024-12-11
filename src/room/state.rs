@@ -1,6 +1,9 @@
 use crate::signaling::PeerConnection;
-use crate::media::relay::MediaRelay;
+use crate::media::MediaRelay;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 #[derive(Debug, Clone)]
 pub struct MediaSettings {
@@ -24,6 +27,8 @@ pub struct Room {
     pub media_relays: HashMap<String, MediaRelay>,
     pub recording_enabled: bool,
     pub connected_pairs: HashSet<(String, String)>,
+    pub peer_connections: HashMap<String, Arc<RTCPeerConnection>>,
+    pub media_tracks: HashMap<String, Vec<Arc<TrackLocalStaticRTP>>>,
 }
 
 impl Default for MediaSettings {
@@ -45,6 +50,8 @@ impl Default for Room {
             media_relays: HashMap::new(),
             recording_enabled: false,
             connected_pairs: HashSet::new(),
+            peer_connections: HashMap::new(),
+            media_tracks: HashMap::new(),
         }
     }
 } 
