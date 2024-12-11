@@ -4,6 +4,20 @@ let activeCallRequests = new Set();
 
 async function connect() {
     try {
+        // Use existing stream if available
+        if (!localStream) {
+            const constraints = {
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: false
+            };
+            localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            console.log('Audio permissions granted:', { tracks: localStream.getTracks() });
+        }
+
         const peerId = document.getElementById('peerId').value || 
                       `user-${Math.random().toString(36).substr(2, 5)}`;
         document.getElementById('peerId').value = peerId;
@@ -16,25 +30,9 @@ async function connect() {
         ws.onerror = handleWebSocketError;
         ws.onclose = handleWebSocketClose;
 
-        const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: false
-        };
-
-        try {
-            localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            document.getElementById('audioStatus').textContent = 'Audio status: Ready';
-        } catch (err) {
-            console.error('Error getting local stream:', err);
-            updateStatus('Error getting local stream: ' + err.message, true);
-            return null;
-        }
     } catch (err) {
-        updateStatus('Error: ' + err.message, true);
+        console.error('Error connecting:', err);
+        updateStatus('Failed to get microphone access', true);
     }
 }
 
@@ -182,25 +180,38 @@ function cleanupConnection() {
 }
 
 async function handleCallResponseMessage(message) {
+    // Ignore if we're already processing a call response
+    if (activeCallRequests.has(message.from_peer)) {
+        console.log(`Already processing call response from ${message.from_peer}`);
+        return;
+    }
+
     if (message.to_peer === document.getElementById('peerId').value && message.accepted) {
-        remotePeerId = message.from_peer;
-        updateStatus(`Call accepted by ${remotePeerId}`);
-        
-        // Create RTCPeerConnection and continue with call setup
-        await setupPeerConnection();
-        
-        // Create and send offer
-        const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: true
-        });
-        await peerConnection.setLocalDescription(offer);
-        
-        sendSignal('Offer', {
-            room_id: document.getElementById('roomId').value,
-            sdp: offer.sdp,
-            from_peer: document.getElementById('peerId').value,
-            to_peer: remotePeerId
-        });
+        try {
+            activeCallRequests.add(message.from_peer);
+            remotePeerId = message.from_peer;
+            updateStatus(`Call accepted by ${remotePeerId}`);
+            
+            // Only proceed if we don't have an active connection
+            if (!peerConnection || peerConnection.connectionState === 'closed') {
+                await setupPeerConnection();
+                
+                // Create and send offer
+                const offer = await peerConnection.createOffer({
+                    offerToReceiveAudio: true
+                });
+                await peerConnection.setLocalDescription(offer);
+                
+                sendSignal('Offer', {
+                    room_id: document.getElementById('roomId').value,
+                    sdp: offer.sdp,
+                    from_peer: document.getElementById('peerId').value,
+                    to_peer: remotePeerId
+                });
+            }
+        } finally {
+            activeCallRequests.delete(message.from_peer);
+        }
     }
 }
 
@@ -264,35 +275,6 @@ async function handleAnswerMessage(message) {
     }
 }
 
-async function checkAudioPermissions() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            }
-        });
-        
-        console.log('Audio permissions granted:', {
-            tracks: stream.getTracks().map(t => ({
-                kind: t.kind,
-                enabled: t.enabled,
-                muted: t.muted,
-                readyState: t.readyState
-            }))
-        });
-        
-        // Stop the test stream
-        stream.getTracks().forEach(track => track.stop());
-        return true;
-    } catch (err) {
-        console.error('Audio permission check failed:', err);
-        updateStatus('Microphone access denied. Please grant permission.', true);
-        return false;
-    }
-}
-
 async function handleIceCandidateMessage(message) {
     if (!peerConnection) {
         console.warn('Received ICE candidate but no peer connection exists');
@@ -314,4 +296,4 @@ async function handleIceCandidateMessage(message) {
 }
 
 // Call this before connecting
-window.addEventListener('load', checkAudioPermissions); 
+// window.addEventListener('load', checkAudioPermissions); 

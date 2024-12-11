@@ -3,6 +3,13 @@ let localStream;
 let remotePeerId = null;
 
 async function setupPeerConnection() {
+    // Only create a new connection if one doesn't exist or is closed
+    if (peerConnection && peerConnection.connectionState !== 'closed') {
+        console.log("Peer connection already exists");
+        return peerConnection;
+    }
+
+    // Use existing stream if available
     if (!localStream) {
         console.log("Getting user media");
         localStream = await navigator.mediaDevices.getUserMedia({ 
@@ -14,15 +21,18 @@ async function setupPeerConnection() {
         });
     }
 
-    console.log("Creating new RTCPeerConnection");
+    // Get STUN server configuration from input fields
+    const stunServer = document.getElementById('stunServer').value || '127.0.0.1';
+    const stunPort = document.getElementById('stunPort').value || '3478';
+    const stunUrl = `stun:${stunServer}:${stunPort}`;
+
+    console.log("Creating new RTCPeerConnection with STUN server:", stunUrl);
     peerConnection = new RTCPeerConnection({
         iceServers: [{
-            urls: 'stun:127.0.0.1:3478'
+            urls: stunUrl
         }],
         iceTransportPolicy: 'all',
-        bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require',
-        iceCandidatePoolSize: 0
+        bundlePolicy: 'max-bundle'
     });
 
     // Add connection monitoring
@@ -220,6 +230,12 @@ function handleConnectionStateChange() {
 }
 
 async function startCall() {
+    // Prevent multiple calls while one is being established
+    if (peerConnection && peerConnection.connectionState !== 'closed') {
+        console.log("Call already in progress");
+        return;
+    }
+
     const selectedPeers = Array.from(document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked'))
         .map(cb => cb.value);
     
