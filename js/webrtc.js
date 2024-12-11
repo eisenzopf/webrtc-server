@@ -1,6 +1,8 @@
 let peerConnection;
 let localStream;
 let remotePeerId = null;
+let hasCamera = false;
+let enableVideo = false;
 
 function handleTrackEvent(event) {
     console.log('Track received:', {
@@ -33,6 +35,31 @@ function handleTrackEvent(event) {
         event.track.onunmute = () => {
             audioElement.play()
                 .then(() => console.log('Audio playback started after unmute'))
+                .catch(e => console.error('Play after unmute failed:', e));
+        };
+    } else if (event.track.kind === 'video') {
+        const videoElement = document.getElementById('remoteVideo');
+        if (!videoElement) {
+            videoElement = document.createElement('video');
+            videoElement.id = 'remoteVideo';
+            videoElement.autoplay = true;
+            videoElement.playsInline = true;
+            videoElement.controls = true;
+            videoElement.width = 320;
+            videoElement.height = 240;
+            document.body.appendChild(videoElement);
+        }
+
+        const stream = new MediaStream([event.track]);
+        videoElement.srcObject = stream;
+        
+        videoElement.play()
+            .then(() => console.log('Initial video playback started'))
+            .catch(e => console.error('Initial play failed:', e));
+
+        event.track.onunmute = () => {
+            videoElement.play()
+                .then(() => console.log('Video playback started after unmute'))
                 .catch(e => console.error('Play after unmute failed:', e));
         };
     }
@@ -205,4 +232,91 @@ function extractIceCandidates(sdp) {
         }
     });
     return candidates;
+}
+
+async function checkMediaDevices() {
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        hasCamera = devices.some(device => device.kind === 'videoinput');
+        
+        const mediaControls = document.getElementById('mediaControls');
+        const enableVideoCheckbox = document.getElementById('enableVideo');
+        
+        if (hasCamera) {
+            mediaControls.style.display = 'block';
+            enableVideoCheckbox.checked = false;
+            enableVideoCheckbox.onchange = (e) => {
+                enableVideo = e.target.checked;
+                // If we're already in a call, we need to renegotiate
+                if (peerConnection && peerConnection.connectionState === 'connected') {
+                    renegotiateMedia();
+                }
+            };
+        } else {
+            mediaControls.style.display = 'none';
+        }
+    } catch (err) {
+        console.error('Error checking media devices:', err);
+    }
+}
+
+async function renegotiateMedia() {
+    try {
+        // Stop all current tracks
+        if (localStream) {
+            localStream.getTracks().forEach(track => {
+                track.stop();
+                localStream.removeTrack(track);
+            });
+        }
+
+        // Get new media stream with updated constraints
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: enableVideo
+        };
+
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        
+        // Replace all tracks in the peer connection
+        const senders = peerConnection.getSenders();
+        const tracks = localStream.getTracks();
+        
+        for (const track of tracks) {
+            const sender = senders.find(s => s.track && s.track.kind === track.kind);
+            if (sender) {
+                sender.replaceTrack(track);
+            } else {
+                peerConnection.addTrack(track, localStream);
+            }
+        }
+
+        // Update UI
+        updateVideoUI();
+    } catch (err) {
+        console.error('Error renegotiating media:', err);
+        updateStatus('Failed to update media settings', true);
+    }
+}
+
+function updateVideoUI() {
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    
+    if (enableVideo) {
+        localVideo.style.display = 'block';
+        remoteVideo.style.display = 'block';
+        if (localStream) {
+            localVideo.srcObject = localStream;
+        }
+    } else {
+        localVideo.style.display = 'none';
+        remoteVideo.style.display = 'none';
+        localVideo.srcObject = null;
+        remoteVideo.srcObject = null;
+    }
 } 

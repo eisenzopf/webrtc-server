@@ -48,7 +48,16 @@
 
     <div class="control-panel">
         <h3>Audio Controls</h3>
-        <button onclick="toggleMute()" id="muteButton">Mute</button>
+        <div class="control-panel">
+            <h3>Media Controls</h3>
+            <div id="mediaControls" style="display: none">
+                <div>
+                    <input type="checkbox" id="enableVideo">
+                    <label for="enableVideo">Enable Video</label>
+                </div>
+                <button onclick="toggleMute()" id="muteButton">Mute Audio</button>
+            </div>
+        </div>
         <div class="status" id="audioStatus">Audio status: Not connected</div>
     </div>
 

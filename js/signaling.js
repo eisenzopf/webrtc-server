@@ -349,7 +349,8 @@ async function setupPeerConnection() {
 
         const configuration = {
             iceServers: [
-                { urls: stunUrl }
+                { urls: stunUrl },
+                { urls: 'stun:stun.l.google.com:19302' }  // Fallback public STUN server
             ],
             iceTransportPolicy: 'all',
             bundlePolicy: 'max-bundle',
@@ -366,13 +367,22 @@ async function setupPeerConnection() {
         // Use existing stream if available
         if (!localStream) {
             console.log("Getting user media");
-            localStream = await navigator.mediaDevices.getUserMedia({ 
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                }
-            });
+            try {
+                const constraints = {
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    },
+                    video: enableVideo
+                };
+                
+                localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                updateVideoUI();
+            } catch (err) {
+                console.error("Failed to get media:", err);
+                throw new Error("Could not access media devices. Please check permissions.");
+            }
         }
 
         console.log("Creating new RTCPeerConnection with configuration:", configuration);
@@ -386,13 +396,14 @@ async function setupPeerConnection() {
 
         // Add local stream tracks to the connection
         localStream.getTracks().forEach(track => {
+            console.log(`Adding track to peer connection: ${track.kind}`);
             peerConnection.addTrack(track, localStream);
         });
 
         return peerConnection;
     } catch (err) {
         console.error('Error setting up peer connection:', err);
-        updateStatus('Failed to access camera/microphone. Please grant permissions and try again.', true);
+        updateStatus('Failed to access microphone. Please grant permissions and try again.', true);
         throw err;
     }
 }
