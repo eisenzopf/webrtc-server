@@ -17,9 +17,7 @@ async function setupPeerConnection() {
     console.log("Creating new RTCPeerConnection");
     peerConnection = new RTCPeerConnection({
         iceServers: [{
-            urls: ['stun:127.0.0.1:3478'],
-            username: '',
-            credential: ''
+            urls: 'stun:127.0.0.1:3478'
         }],
         iceTransportPolicy: 'all',
         bundlePolicy: 'max-bundle',
@@ -63,10 +61,27 @@ async function setupPeerConnection() {
         }
     };
 
+    peerConnection.onnegotiationneeded = async () => {
+        console.log('Negotiation needed');
+        try {
+            await startCall();  // Only if not already in a call
+        } catch (err) {
+            console.error('Error during negotiation:', err);
+        }
+    };
+
     console.log("Adding local tracks to connection");
     localStream.getTracks().forEach(track => {
         peerConnection.addTrack(track, localStream);
     });
+
+    // Handle incoming tracks
+    peerConnection.ontrack = (event) => {
+        console.log('Received remote track:', event.track.kind);
+        const audioElement = new Audio();
+        audioElement.srcObject = event.streams[0];
+        audioElement.play().catch(err => console.error('Error playing audio:', err));
+    };
 
     return peerConnection;
 }
