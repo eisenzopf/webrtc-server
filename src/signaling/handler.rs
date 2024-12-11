@@ -15,7 +15,7 @@ use webrtc::{
     peer_connection::{
         configuration::RTCConfiguration,
         peer_connection_state::RTCPeerConnectionState,
-        peer_connection::RTCPeerConnection,
+        RTCPeerConnection,
         sdp::session_description::RTCSessionDescription,
     },
     ice_transport::ice_server::RTCIceServer,
@@ -240,8 +240,8 @@ impl MessageHandler {
         from_peer: String,
         to_peers: Vec<String>
     ) -> Result<()> {
-        let rooms = self.rooms.read().await;
-        if let Some(room) = rooms.get(&room_id) {
+        let mut rooms = self.rooms.write().await;
+        if let Some(room) = rooms.get_mut(&room_id) {
             // Set up media tracks for the calling peer
             if let Some(relay) = room.media_relays.get(&from_peer) {
                 // Create and add audio track
@@ -252,16 +252,14 @@ impl MessageHandler {
                     },
                     format!("audio_{}", from_peer),
                     "webrtc-rs".to_owned(),
-                ).map_err(|e| Error::Media(e.to_string()))?);
+                ));
 
                 let track = relay.peer_connection.add_track(track_local.clone()).await?;
 
                 // Store track reference
-                if let Some(room) = rooms.get_mut(&room_id) {
-                    room.media_tracks.entry(from_peer.clone())
-                        .or_insert_with(Vec::new)
-                        .push(track_local);
-                }
+                room.media_tracks.entry(from_peer.clone())
+                    .or_insert_with(Vec::new)
+                    .push(track_local);
             }
         }
         
@@ -329,7 +327,7 @@ impl MessageHandler {
         room_id: &str,
         candidate: &str,
         from_peer: &str,
-        to_peer: &str
+        to_peer: &str,
     ) -> Result<()> {
         println!("Handling ICE candidate from {} to {} in room {}", from_peer, to_peer, room_id);
         
@@ -394,15 +392,41 @@ impl MessageHandler {
         peer_connection: Arc<RTCPeerConnection>,
         peer_id: String,
         room_id: String,
+        peers: PeerMap,
     ) {
-        peer_connection.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            println!("Peer connection state changed for peer {}: {:?}", peer_id, s);
-            Box::pin(async {})
-        }));
+        let pc_clone = peer_connection.clone();
+        let peer_id_clone = peer_id.clone();
+        let room_id_clone = room_id.clone();
+        let peers_clone = peers.clone();
 
-        peer_connection.on_track(Box::new(move |track: Option<Arc<TrackRemote>>, receiver: Option<Arc<RTCRtpReceiver>>, _: &[RTCRtpTransceiver]| {
-            println!("Received track from peer {}", peer_id);
-            Box::pin(async {})
+        peer_connection.on_track(Box::new(move |track: Arc<TrackRemote>, 
+                                       receiver: Arc<RTCRtpReceiver>, 
+                                       transceiver: Arc<RTCRtpTransceiver>| {
+            let pc = pc_clone.clone();
+            let peer_id = peer_id_clone.clone();
+            let room_id = room_id_clone.clone();
+            let peers = peers_clone.clone();
+
+            Box::pin(async move {
+                // Forward track to other peers in room
+                let peers_read = peers.read().await;
+                if let Some(room_peers) = peers_read.get(&room_id) {
+                    for (other_peer_id, _) in room_peers {
+                        if other_peer_id != &peer_id {
+                            // Create new track for forwarding
+                            let local_track = TrackLocalStaticRTP::new(
+                                track.codec().capability,
+                                format!("forwarded_{}", track.id()),
+                                "webrtc-rs".to_owned(),
+                            );
+                            let track_local = Arc::new(local_track);
+                            if let Ok(rtp_sender) = pc.add_track(track_local.clone()).await {
+                                // Store track if needed
+                            }
+                        }
+                    }
+                }
+            })
         }));
     }
 
@@ -438,31 +462,29 @@ impl MessageHandler {
         let room_id_clone = room_id.to_string();
         let peers = self.peers.clone();
 
-        // Handle incoming tracks
-        peer_connection.on_track(Box::new(move |track: Option<Arc<TrackRemote>>, receiver: Option<Arc<RTCRtpReceiver>>, _: &[RTCRtpTransceiver]| {
+        peer_connection.on_track(Box::new(move |track: Arc<TrackRemote>, 
+                                       receiver: Arc<RTCRtpReceiver>, 
+                                       transceiver: Arc<RTCRtpTransceiver>| {
             let pc = pc_clone.clone();
             let peer_id = peer_id_clone.clone();
             let room_id = room_id_clone.clone();
             let peers = peers.clone();
 
             Box::pin(async move {
-                if let Some(track) = track {
-                    // Forward track to other peers in room
-                    let peers_read = peers.read().await;
-                    if let Some(room_peers) = peers_read.get(&room_id) {
-                        for (other_peer_id, _) in room_peers {
-                            if other_peer_id != &peer_id {
-                                // Create new track for forwarding
-                                if let Ok(local_track) = TrackLocalStaticRTP::new(
-                                    track.codec().capability,
-                                    format!("forwarded_{}", track.id()),
-                                    "webrtc-rs".to_owned(),
-                                ).map_err(|e| Error::Media(e.to_string())) {
-                                    let track_local = Arc::new(local_track);
-                                    if let Ok(rtp_sender) = pc.add_track(track_local.clone()).await {
-                                        // Store track if needed
-                                    }
-                                }
+                // Forward track to other peers in room
+                let peers_read = peers.read().await;
+                if let Some(room_peers) = peers_read.get(&room_id) {
+                    for (other_peer_id, _) in room_peers {
+                        if other_peer_id != &peer_id {
+                            // Create new track for forwarding
+                            let local_track = TrackLocalStaticRTP::new(
+                                track.codec().capability,
+                                format!("forwarded_{}", track.id()),
+                                "webrtc-rs".to_owned(),
+                            );
+                            let track_local = Arc::new(local_track);
+                            if let Ok(rtp_sender) = pc.add_track(track_local.clone()).await {
+                                // Store track if needed
                             }
                         }
                     }
@@ -520,23 +542,6 @@ impl MessageHandler {
                 };
 
                 self.send_to_peer(from_peer, &answer_msg).await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_ice_candidate(
-        &self,
-        room_id: &str,
-        candidate: &str,
-        from_peer: &str,
-        to_peer: &str,
-    ) -> Result<()> {
-        let rooms = self.rooms.read().await;
-        if let Some(room) = rooms.get(room_id) {
-            if let Some(relay) = room.media_relays.get(to_peer) {
-                let candidate = RTCIceCandidate::from_str(candidate)?;
-                relay.peer_connection.add_ice_candidate(candidate).await?;
             }
         }
         Ok(())
