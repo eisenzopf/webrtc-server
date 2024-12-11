@@ -28,11 +28,14 @@ async function setupPeerConnection() {
 
     console.log("Creating new RTCPeerConnection with STUN server:", stunUrl);
     peerConnection = new RTCPeerConnection({
-        iceServers: [{
-            urls: stunUrl
-        }],
+        iceServers: [
+            { urls: stunUrl },
+            { urls: 'stun:stun.l.google.com:19302' }  // Fallback public STUN server
+        ],
         iceTransportPolicy: 'all',
-        bundlePolicy: 'max-bundle'
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 10
     });
 
     // Add connection monitoring

@@ -1,38 +1,59 @@
 let ws;
 let isDisconnecting = false;
 let activeCallRequests = new Set();
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 async function connect() {
     try {
-        // Use existing stream if available
-        if (!localStream) {
-            const constraints = {
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                },
-                video: false
-            };
-            localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            console.log('Audio permissions granted:', { tracks: localStream.getTracks() });
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            console.log('WebSocket already connected');
+            return;
         }
 
-        const peerId = document.getElementById('peerId').value || 
-                      `user-${Math.random().toString(36).substr(2, 5)}`;
-        document.getElementById('peerId').value = peerId;
+        const serverAddress = document.getElementById('stunServer').value;
+        console.log(`Attempting connection to WebSocket server: ws://${serverAddress}:8080`);
         
-        ws = new WebSocket(`ws://${document.getElementById('stunServer').value}:8080`);
-        console.log('WebSocket connection attempting...');
+        ws = new WebSocket(`ws://${serverAddress}:8080`);
         
-        ws.onopen = handleWebSocketOpen;
-        ws.onmessage = handleWebSocketMessage;
-        ws.onerror = handleWebSocketError;
-        ws.onclose = handleWebSocketClose;
+        ws.onopen = () => {
+            console.log('WebSocket connected successfully');
+            reconnectAttempts = 0;
+            handleWebSocketOpen();
+        };
+        
+        ws.onmessage = (event) => {
+            console.log('Received WebSocket message:', event.data);
+            handleWebSocketMessage(event);
+        };
+        
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            handleWebSocketError(error);
+        };
+        
+        ws.onclose = (event) => {
+            console.log('WebSocket closed:', {
+                code: event.code,
+                reason: event.reason,
+                wasClean: event.wasClean
+            });
+            handleWebSocketClose(event);
+            
+            if (!isDisconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+                console.log(`Connection lost. Attempting to reconnect in ${delay}ms (${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+                reconnectAttempts++;
+                setTimeout(connect, delay);
+            } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                console.error('Max reconnection attempts reached');
+                updateStatus('Connection failed - please refresh', true);
+            }
+        };
 
     } catch (err) {
         console.error('Error connecting:', err);
-        updateStatus('Failed to get microphone access', true);
+        updateStatus('Failed to connect', true);
     }
 }
 
