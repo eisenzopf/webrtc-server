@@ -256,10 +256,26 @@ async function handleOfferMessage(message) {
         console.log("Setting local description (answer)");
         await peerConnection.setLocalDescription(answer);
 
+        // Wait for ICE gathering to complete before sending answer
+        await new Promise((resolve) => {
+            if (peerConnection.iceGatheringState === 'complete') {
+                resolve();
+            } else {
+                peerConnection.onicegatheringstatechange = () => {
+                    if (peerConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    }
+                };
+            }
+        });
+
+        // Get the complete local description with ICE candidates
+        const completeAnswer = peerConnection.localDescription;
+
         console.log("Sending answer to:", message.from_peer);
         sendSignal('Answer', {
             room_id: document.getElementById('roomId').value,
-            sdp: answer.sdp,
+            sdp: completeAnswer.sdp,
             from_peer: document.getElementById('peerId').value,
             to_peer: message.from_peer
         });
