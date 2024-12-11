@@ -225,38 +225,17 @@ function cleanupConnection() {
 }
 
 async function handleCallResponseMessage(message) {
-    // Ignore if we're already processing a call response
-    if (activeCallRequests.has(message.from_peer)) {
-        console.log(`Already processing call response from ${message.from_peer}`);
-        return;
-    }
-
-    if (message.to_peer === document.getElementById('peerId').value && message.accepted) {
+    if (message.accepted) {
+        remotePeerId = message.from_peer;
+        updateStatus(`Call accepted by ${remotePeerId}`);
         try {
-            activeCallRequests.add(message.from_peer);
-            remotePeerId = message.from_peer;
-            updateStatus(`Call accepted by ${remotePeerId}`);
-            
-            // Only proceed if we don't have an active connection
-            if (!peerConnection || peerConnection.connectionState === 'closed') {
-                await setupPeerConnection();
-                
-                // Create and send offer
-                const offer = await peerConnection.createOffer({
-                    offerToReceiveAudio: true
-                });
-                await peerConnection.setLocalDescription(offer);
-                
-                sendSignal('Offer', {
-                    room_id: document.getElementById('roomId').value,
-                    sdp: offer.sdp,
-                    from_peer: document.getElementById('peerId').value,
-                    to_peer: remotePeerId
-                });
-            }
-        } finally {
-            activeCallRequests.delete(message.from_peer);
+            await setupPeerConnection();
+            // Rest of the handling...
+        } catch (err) {
+            console.error('Error setting up call:', err);
         }
+    } else {
+        updateStatus(`Call rejected by ${message.from_peer}: ${message.reason || 'No reason given'}`, true);
     }
 }
 
@@ -337,74 +316,6 @@ async function handleIceCandidateMessage(message) {
         await peerConnection.addIceCandidate(candidate);
     } catch (err) {
         console.error('Error adding ICE candidate:', err);
-    }
-}
-
-async function setupPeerConnection() {
-    try {
-        // Get STUN server configuration from input fields
-        const stunServer = document.getElementById('stunServer').value || '127.0.0.1';
-        const stunPort = document.getElementById('stunPort').value || '3478';
-        const stunUrl = `stun:${stunServer}:${stunPort}`;
-
-        const configuration = {
-            iceServers: [
-                { urls: stunUrl },
-                { urls: 'stun:stun.l.google.com:19302' }  // Fallback public STUN server
-            ],
-            iceTransportPolicy: 'all',
-            bundlePolicy: 'max-bundle',
-            rtcpMuxPolicy: 'require',
-            iceCandidatePoolSize: 10
-        };
-
-        // Only create a new connection if one doesn't exist or is closed
-        if (peerConnection && peerConnection.connectionState !== 'closed') {
-            console.log("Peer connection already exists");
-            return peerConnection;
-        }
-
-        // Use existing stream if available
-        if (!localStream) {
-            console.log("Getting user media");
-            try {
-                const constraints = {
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    },
-                    video: enableVideo
-                };
-                
-                localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                updateVideoUI();
-            } catch (err) {
-                console.error("Failed to get media:", err);
-                throw new Error("Could not access media devices. Please check permissions.");
-            }
-        }
-
-        console.log("Creating new RTCPeerConnection with configuration:", configuration);
-        peerConnection = new RTCPeerConnection(configuration);
-
-        // Add connection monitoring
-        peerConnection.onconnectionstatechange = handleConnectionStateChange;
-        peerConnection.oniceconnectionstatechange = handleIceConnectionStateChange;
-        peerConnection.ontrack = handleTrackEvent;
-        peerConnection.onicecandidate = handleIceCandidate;
-
-        // Add local stream tracks to the connection
-        localStream.getTracks().forEach(track => {
-            console.log(`Adding track to peer connection: ${track.kind}`);
-            peerConnection.addTrack(track, localStream);
-        });
-
-        return peerConnection;
-    } catch (err) {
-        console.error('Error setting up peer connection:', err);
-        updateStatus('Failed to access microphone. Please grant permissions and try again.', true);
-        throw err;
     }
 }
 

@@ -21,22 +21,17 @@ function handleTrackEvent(event) {
             audioElement.autoplay = true;
             audioElement.playsInline = true;
             audioElement.controls = true;
-            audioElement.volume = 1.0;
             document.body.appendChild(audioElement);
         }
 
         const stream = new MediaStream([event.track]);
         audioElement.srcObject = stream;
         
-        audioElement.play()
-            .then(() => console.log('Initial audio playback started'))
-            .catch(e => console.error('Initial play failed:', e));
-
-        event.track.onunmute = () => {
-            audioElement.play()
-                .then(() => console.log('Audio playback started after unmute'))
-                .catch(e => console.error('Play after unmute failed:', e));
-        };
+        audioElement.onerror = (e) => console.error('Audio element error:', e);
+        
+        audioElement.onplaying = () => console.log('Audio is now playing');
+        
+        audioElement.muted = false;
     } else if (event.track.kind === 'video') {
         const videoElement = document.getElementById('remoteVideo');
         if (!videoElement) {
@@ -146,20 +141,26 @@ function handleIceConnectionStateChange() {
 }
 
 function handleConnectionStateChange() {
-    const state = {
+    if (!peerConnection) return;
+    
+    console.log('Connection state changed:', {
         connectionState: peerConnection.connectionState,
         iceConnectionState: peerConnection.iceConnectionState,
-        signalingState: peerConnection.signalingState,
-        iceGatheringState: peerConnection.iceGatheringState
-    };
-    console.log('Connection State Change:', state);
-    
-    if (peerConnection.connectionState === 'connected') {
-        updateCallStatus('connected', remotePeerId);
-    } else if (peerConnection.connectionState === 'failed' || 
-               peerConnection.connectionState === 'disconnected') {
-        updateCallStatus(peerConnection.connectionState);
-    }
+        iceGatheringState: peerConnection.iceGatheringState,
+        signalingState: peerConnection.signalingState
+    });
+
+    // Check audio tracks
+    const receivers = peerConnection.getReceivers();
+    receivers.forEach(receiver => {
+        if (receiver.track.kind === 'audio') {
+            console.log('Audio receiver track:', {
+                enabled: receiver.track.enabled,
+                muted: receiver.track.muted,
+                readyState: receiver.track.readyState
+            });
+        }
+    });
 }
 
 async function startCall() {
@@ -319,4 +320,75 @@ function updateVideoUI() {
         localVideo.srcObject = null;
         remoteVideo.srcObject = null;
     }
-} 
+}
+
+async function setupPeerConnection() {
+    try {
+        // Get STUN server configuration from input fields
+        const stunServer = document.getElementById('stunServer').value || '127.0.0.1';
+        const stunPort = document.getElementById('stunPort').value || '3478';
+        const stunUrl = `stun:${stunServer}:${stunPort}`;
+
+        const configuration = {
+            iceServers: [
+                { urls: stunUrl },
+                { urls: 'stun:stun.l.google.com:19302' }  // Fallback public STUN server
+            ],
+            iceTransportPolicy: 'all',
+            bundlePolicy: 'max-bundle',
+            rtcpMuxPolicy: 'require',
+            iceCandidatePoolSize: 10
+        };
+
+        // Only create a new connection if one doesn't exist or is closed
+        if (peerConnection && peerConnection.connectionState !== 'closed') {
+            console.log("Peer connection already exists");
+            return peerConnection;
+        }
+
+        // Add specific audio constraints
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: enableVideo
+        };
+
+        // Get user media with logging
+        console.log('Requesting user media with constraints:', constraints);
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        
+        // Verify audio tracks exist
+        const audioTracks = localStream.getAudioTracks();
+        console.log('Local audio tracks:', audioTracks);
+        
+        if (audioTracks.length === 0) {
+            throw new Error('No audio track found in local stream');
+        }
+
+        updateVideoUI();
+
+        console.log("Creating new RTCPeerConnection with configuration:", configuration);
+        peerConnection = new RTCPeerConnection(configuration);
+
+        // Add connection monitoring
+        peerConnection.onconnectionstatechange = handleConnectionStateChange;
+        peerConnection.oniceconnectionstatechange = handleIceConnectionStateChange;
+        peerConnection.ontrack = handleTrackEvent;
+        peerConnection.onicecandidate = handleIceCandidate;
+
+        // Add local stream tracks to the connection
+        localStream.getTracks().forEach(track => {
+            console.log(`Adding track to peer connection: ${track.kind}`);
+            peerConnection.addTrack(track, localStream);
+        });
+
+        return peerConnection;
+    } catch (err) {
+        console.error('Error setting up peer connection:', err);
+        updateStatus('Failed to access microphone. Please grant permissions and try again.', true);
+        throw err;
+    }
+}
