@@ -17,28 +17,55 @@ async function setupPeerConnection() {
     console.log("Creating new RTCPeerConnection");
     peerConnection = new RTCPeerConnection({
         iceServers: [{
-            urls: 'stun:127.0.0.1:3478'
-        }]
+            urls: ['stun:127.0.0.1:3478'],
+            username: '',
+            credential: ''
+        }],
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 0
     });
 
+    // Add connection monitoring
+    peerConnection.onconnectionstatechange = () => {
+        console.log(`Connection state changed: ${peerConnection.connectionState}`);
+        if (peerConnection.connectionState === 'connected') {
+            console.log('Peer connection successfully established');
+            updateCallStatus('connected', remotePeerId);
+        } else if (peerConnection.connectionState === 'failed') {
+            console.error('Connection failed - attempting ICE restart');
+            peerConnection.restartIce();
+        }
+    };
+
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
+        if (peerConnection.iceConnectionState === 'failed') {
+            console.error('ICE Connection failed - creating new offer');
+            createAndSendOffer();
+        }
+    };
+
+    // Existing event handlers...
     peerConnection.ontrack = handleTrackEvent;
     peerConnection.onicecandidate = handleIceCandidate;
-    peerConnection.oniceconnectionstatechange = handleIceConnectionStateChange;
     peerConnection.onsignalingstatechange = () => {
         console.log('Signaling State Change:', peerConnection.signalingState);
     };
-    peerConnection.onconnectionstatechange = handleConnectionStateChange;
+
+    // Enhanced ICE gathering state monitoring
+    peerConnection.onicegatheringstatechange = () => {
+        console.log('ICE gathering state:', peerConnection.iceGatheringState);
+        if (peerConnection.iceGatheringState === 'complete') {
+            const candidates = extractIceCandidates(peerConnection.localDescription.sdp);
+            console.log('All ICE candidates:', candidates);
+        }
+    };
 
     console.log("Adding local tracks to connection");
     localStream.getTracks().forEach(track => {
-        track.enabled = true;
         peerConnection.addTrack(track, localStream);
-        console.log('Local track added:', {
-            kind: track.kind,
-            enabled: track.enabled,
-            muted: track.muted,
-            id: track.id
-        });
     });
 
     return peerConnection;
@@ -82,28 +109,34 @@ function handleTrackEvent(event) {
 
 function handleIceCandidate(event) {
     if (event.candidate) {
-        const candidateStr = event.candidate.candidate;
-        console.log('New ICE candidate:', {
-            candidate: candidateStr,
-            type: event.candidate.type,
-            protocol: candidateStr.split(' ')[2], // UDP/TCP
-            address: candidateStr.split(' ')[4], // IP address
-            port: candidateStr.split(' ')[5], // Port
-            candidateType: candidateStr.split(' ')[7] // type (host/srflx/relay)
-        });
+        const candidate = event.candidate;
         
+        // Log detailed candidate information
+        console.log('ICE candidate:', {
+            type: candidate.type,
+            protocol: candidate.protocol,
+            address: candidate.address,
+            port: candidate.port,
+            priority: candidate.priority,
+            foundation: candidate.foundation,
+            component: candidate.component,
+            relatedAddress: candidate.relatedAddress,
+            relatedPort: candidate.relatedPort,
+            tcpType: candidate.tcpType,
+            usernameFragment: candidate.usernameFragment
+        });
+
         sendSignal('IceCandidate', {
             room_id: document.getElementById('roomId').value,
             candidate: {
-                candidate: event.candidate.candidate,
-                sdpMid: event.candidate.sdpMid,
-                sdpMLineIndex: event.candidate.sdpMLineIndex
+                candidate: candidate.candidate,
+                sdpMid: candidate.sdpMid,
+                sdpMLineIndex: candidate.sdpMLineIndex,
+                usernameFragment: candidate.usernameFragment
             },
             from_peer: document.getElementById('peerId').value,
             to_peer: remotePeerId
         });
-    } else {
-        console.log('ICE Candidate gathering complete');
     }
 }
 
@@ -214,4 +247,25 @@ async function endCall() {
         console.error('Error ending call:', err);
         updateStatus('Error ending call: ' + err.message, true);
     }
+}
+
+// Add this helper function to extract ICE candidates from SDP
+function extractIceCandidates(sdp) {
+    const candidates = [];
+    const lines = sdp.split('\r\n');
+    lines.forEach(line => {
+        if (line.indexOf('a=candidate:') === 0) {
+            const parts = line.split(' ');
+            candidates.push({
+                foundation: parts[0].split(':')[1],
+                component: parts[1],
+                protocol: parts[2],
+                priority: parts[3],
+                ip: parts[4],
+                port: parts[5],
+                type: parts[7]
+            });
+        }
+    });
+    return candidates;
 } 

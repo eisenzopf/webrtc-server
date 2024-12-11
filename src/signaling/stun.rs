@@ -1,11 +1,11 @@
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
-use stun::message::{Message, MessageType, BINDING_REQUEST, Setter};
-use stun::agent::TransactionId;
+use stun::message::{Message, MessageType, Method, BINDING_REQUEST, CLASS_SUCCESS_RESPONSE, METHOD_BINDING};
 use stun::xoraddr::XorMappedAddress;
-use stun::attributes::{ATTR_XORMAPPED_ADDRESS, RawAttribute};
+use stun::message::Setter;
+use stun::attributes::ATTR_XORMAPPED_ADDRESS;
+use log::{info, error, debug, trace};
 use crate::utils::{Error, Result};
-use log::{info, error, debug};
 
 pub struct StunService {
     addr: SocketAddr,
@@ -36,36 +36,52 @@ impl StunService {
         loop {
             match socket.recv_from(&mut buf).await {
                 Ok((len, src)) => {
-                    debug!("Received {} bytes from {}", len, src);
+                    trace!("Received UDP packet: {} bytes from {}", len, src);
+                    debug!("Raw packet data: {:?}", &buf[..len]);
                     
                     let mut msg = Message::new();
-                    msg.raw.extend_from_slice(&buf[..len]);
-                    
-                    match msg.decode() {
-                        Ok(()) if msg.typ == BINDING_REQUEST => {
-                            let mut response = Message::new();
-                            let mut txid = TransactionId::new();
-                            txid.0.copy_from_slice(&msg.transaction_id.0);
-                            
-                            response.build(&[
-                                Box::new(txid),
-                                Box::new(BINDING_REQUEST)
-                            ]).map_err(|e| Error::IO(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-                            
-                            let addr = XorMappedAddress {
-                                ip: src.ip(),
-                                port: src.port(),
-                            };
-                            
-                            addr.add_to(&mut response)
-                                .map_err(|e| Error::IO(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-                            
-                            if let Err(e) = socket.send_to(&response.raw, src).await {
-                                error!("Failed to send response: {}", e);
+                    match msg.unmarshal_binary(&buf[..len]) {
+                        Ok(_) => {
+                            debug!("Decoded STUN message type: {:?}", msg.typ);
+                            if msg.typ == BINDING_REQUEST {
+                                info!("Processing STUN binding request from {}", src);
+                                
+                                let mut response = Message::new();
+                                response.transaction_id.0.copy_from_slice(&msg.transaction_id.0);
+                                response.typ = MessageType::new(Method::from(METHOD_BINDING), CLASS_SUCCESS_RESPONSE);
+                                
+                                debug!("Creating XOR-MAPPED-ADDRESS for {}:{}", src.ip(), src.port());
+                                let addr = XorMappedAddress {
+                                    ip: src.ip(),
+                                    port: src.port(),
+                                };
+                                trace!("XOR-MAPPED-ADDRESS components - IP: {}, Port: {}", src.ip(), src.port());
+
+                                if let Err(e) = addr.add_to_as(&mut response, ATTR_XORMAPPED_ADDRESS) {
+                                    error!("Failed to add XOR-MAPPED-ADDRESS: {}", e);
+                                    continue;
+                                }
+                                trace!("Added XOR-MAPPED-ADDRESS attribute to response");
+
+                                match response.marshal_binary() {
+                                    Ok(bytes) => {
+                                        debug!("Sending STUN binding response ({} bytes) to {}", bytes.len(), src);
+                                        trace!("Response data: {:?}", bytes);
+                                        if let Err(e) = socket.send_to(&bytes, src).await {
+                                            error!("Failed to send response: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to marshal STUN response: {}", e);
+                                    }
+                                }
+                            } else {
+                                debug!("Received non-binding request: {:?}", msg.typ);
                             }
                         }
-                        Ok(()) => debug!("Received non-binding request"),
-                        Err(e) => error!("Failed to decode STUN message: {}", e),
+                        Err(e) => {
+                            debug!("Failed to decode STUN message: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
