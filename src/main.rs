@@ -17,8 +17,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     log::info!("Starting WebRTC servers...");
 
     // Create both servers
-    let signaling_server = SignalingServer::new("127.0.0.1:8080");
-    let stun_server = StunService::new("127.0.0.1:3478").await?;
+    let signaling_server = SignalingServer::new("0.0.0.0:8080");
+    let stun_server = StunService::new("0.0.0.0:3478").await?;
 
     // Run both servers concurrently with shutdown handling
     select! {

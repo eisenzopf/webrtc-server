@@ -22,7 +22,7 @@ async function connect() {
                       `user-${Math.random().toString(36).substr(2, 5)}`;
         document.getElementById('peerId').value = peerId;
         
-        ws = new WebSocket('ws://127.0.0.1:8080');
+        ws = new WebSocket(`ws://${document.getElementById('stunServer').value}:8080`);
         console.log('WebSocket connection attempting...');
         
         ws.onopen = handleWebSocketOpen;
