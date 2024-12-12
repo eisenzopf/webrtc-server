@@ -295,8 +295,9 @@ async function handleOfferMessage(message) {
         if (iceCandidateQueue.length > 0) {
             console.log(`Processing ${iceCandidateQueue.length} queued ICE candidates`);
             while (iceCandidateQueue.length) {
-                const candidate = iceCandidateQueue.shift();
+                const {candidate, from_peer} = iceCandidateQueue.shift();
                 try {
+                    console.log('Processing queued ICE candidate:', candidate);
                     await peerConnection.addIceCandidate(candidate);
                 } catch (err) {
                     console.error('Error adding queued ICE candidate:', err);
@@ -311,6 +312,7 @@ async function handleOfferMessage(message) {
 async function handleAnswerMessage(message) {
     console.log("Received answer from:", message.from_peer);
     try {
+        remotePeerId = message.from_peer;
         if (!peerConnection) {
             console.log("No peer connection available for answer");
             return;
@@ -352,8 +354,9 @@ async function handleAnswerMessage(message) {
         if (iceCandidateQueue.length > 0) {
             console.log(`Processing ${iceCandidateQueue.length} queued ICE candidates`);
             while (iceCandidateQueue.length) {
-                const candidate = iceCandidateQueue.shift();
+                const {candidate, from_peer} = iceCandidateQueue.shift();
                 try {
+                    console.log('Processing queued ICE candidate:', candidate);
                     await peerConnection.addIceCandidate(candidate);
                 } catch (err) {
                     console.error('Error adding queued ICE candidate:', err);
@@ -379,9 +382,9 @@ async function handleIceCandidateMessage(message) {
         const candidateData = JSON.parse(message.candidate);
         const candidate = new RTCIceCandidate({
             candidate: `candidate:${candidateData.foundation} ${candidateData.component} ${candidateData.protocol} ${candidateData.priority} ${candidateData.address} ${candidateData.port} typ ${candidateData.typ}${candidateData.related_address ? ` raddr ${candidateData.related_address} rport ${candidateData.related_port}` : ''}`,
-            sdpMid: '0',
-            sdpMLineIndex: 0,
-            usernameFragment: candidateData.usernameFragment || undefined
+            sdpMid: candidateData.sdpMid || '0',
+            sdpMLineIndex: candidateData.sdpMLineIndex || 0,
+            usernameFragment: candidateData.usernameFragment
         });
         
         // If remote description isn't set yet, queue the candidate

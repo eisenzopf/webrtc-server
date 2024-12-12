@@ -425,12 +425,20 @@ async function setupPeerConnection() {
                 console.log('ICE candidate:', event.candidate);
                 sendSignal('IceCandidate', {
                     room_id: document.getElementById('roomId').value,
-                    candidate: {
-                        candidate: event.candidate.candidate,
+                    candidate: JSON.stringify({
+                        foundation: event.candidate.foundation,
+                        component: event.candidate.component,
+                        protocol: event.candidate.protocol,
+                        priority: event.candidate.priority,
+                        address: event.candidate.address,
+                        port: event.candidate.port,
+                        typ: event.candidate.type,
+                        related_address: event.candidate.relatedAddress,
+                        related_port: event.candidate.relatedPort,
+                        usernameFragment: event.candidate.usernameFragment,
                         sdpMid: event.candidate.sdpMid,
-                        sdpMLineIndex: event.candidate.sdpMLineIndex,
-                        usernameFragment: event.candidate.usernameFragment
-                    },
+                        sdpMLineIndex: event.candidate.sdpMLineIndex
+                    }),
                     from_peer: document.getElementById('peerId').value,
                     to_peer: remotePeerId
                 });
