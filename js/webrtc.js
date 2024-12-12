@@ -137,11 +137,11 @@ async function startCall() {
 
         // Clean up any existing peer connection
         if (peerConnection) {
-            // Remove all existing senders first
             const senders = peerConnection.getSenders();
-            for (const sender of senders) {
-                peerConnection.removeTrack(sender);
-            }
+            const promises = senders.map(sender => 
+                peerConnection.removeTrack(sender)
+            );
+            await Promise.all(promises);
             peerConnection.close();
             peerConnection = null;
         }
@@ -177,7 +177,14 @@ async function startCall() {
         // Add tracks to the new peer connection
         localStream.getTracks().forEach(track => {
             console.log('Adding track to peer connection:', track.kind);
-            peerConnection.addTrack(track, localStream);
+            const existingSender = peerConnection.getSenders().find(s => 
+                s.track && s.track.kind === track.kind
+            );
+            if (existingSender) {
+                existingSender.replaceTrack(track);
+            } else {
+                peerConnection.addTrack(track, localStream);
+            }
         });
 
         // Send CallRequest to initiate server-relayed call
