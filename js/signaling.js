@@ -1,3 +1,14 @@
+// Import shared state and functions from webrtc.js
+import {
+    peerConnection,
+    localStream,
+    remotePeerId,
+    setupPeerConnection,
+    handleTrack,
+    getIceServers,
+    enableVideo
+} from './webrtc.js';
+
 let ws;
 let isDisconnecting = false;
 let activeCallRequests = new Set();
@@ -380,6 +391,8 @@ async function handleIceCandidateMessage(message) {
     
     try {
         const candidateData = JSON.parse(message.candidate);
+        console.log('Parsed ICE candidate data:', candidateData);
+        
         const candidate = new RTCIceCandidate({
             candidate: `candidate:${candidateData.foundation} ${candidateData.component} ${candidateData.protocol} ${candidateData.priority} ${candidateData.address} ${candidateData.port} typ ${candidateData.typ}${candidateData.related_address ? ` raddr ${candidateData.related_address} rport ${candidateData.related_port}` : ''}`,
             sdpMid: candidateData.sdpMid || '0',
@@ -400,9 +413,7 @@ async function handleIceCandidateMessage(message) {
         console.log('Adding ICE candidate:', candidate);
         await peerConnection.addIceCandidate(candidate);
     } catch (err) {
-        console.error('Error adding ICE candidate:', err);
+        console.error('Error handling ICE candidate:', err);
+        console.error('Candidate data:', message.candidate);
     }
 }
-
-// Call this before connecting
-// window.addEventListener('load', checkAudioPermissions); 

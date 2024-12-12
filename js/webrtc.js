@@ -1,10 +1,10 @@
-let peerConnection;
-let localStream;
-let remotePeerId = null;
-let hasCamera = false;
-let enableVideo = false;
+// Export shared state and functions
+export let peerConnection;
+export let localStream;
+export let remotePeerId = null;
+export let enableVideo = false;
 
-function handleTrackEvent(event) {
+export function handleTrack(event) {
     console.log('Received track from server:', event.track.kind);
     
     if (event.track.kind === 'audio') {
@@ -22,6 +22,113 @@ function handleTrackEvent(event) {
         videoElement.style.display = 'block';
         console.log('Added video track to remote video element');
     }
+}
+
+export async function getIceServers() {
+    const config = await getIceServers();
+    console.log('Using connection type:', config.type);
+    peerConnection = new RTCPeerConnection(config.iceServers);
+    
+    // Add event handlers
+    peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+            console.log('ICE candidate:', event.candidate);
+            // Make sure remotePeerId is set when creating the peer connection
+            if (!remotePeerId) {
+                console.warn('No remote peer ID set for ICE candidate');
+                return;
+            }
+            sendSignal('IceCandidate', {
+                room_id: document.getElementById('roomId').value,
+                candidate: JSON.stringify({
+                    foundation: event.candidate.foundation,
+                    component: event.candidate.component,
+                    protocol: event.candidate.protocol,
+                    priority: event.candidate.priority,
+                    address: event.candidate.address,
+                    port: event.candidate.port,
+                    typ: event.candidate.type,
+                    related_address: event.candidate.relatedAddress,
+                    related_port: event.candidate.relatedPort,
+                    usernameFragment: event.candidate.usernameFragment,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex
+                }),
+                from_peer: document.getElementById('peerId').value,
+                to_peer: remotePeerId
+            });
+        }
+    };
+    peerConnection.ontrack = handleTrack;
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log('ICE connection state:', peerConnection.iceConnectionState);
+    };
+    
+    // Add local stream tracks to the connection
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            console.log('Adding track to peer connection:', track.kind);
+            peerConnection.addTrack(track, localStream);
+        });
+    }
+    
+    return peerConnection;
+}
+
+export async function setupPeerConnection() {
+    if (peerConnection) {
+        console.log('Peer connection already exists');
+        return;
+    }
+
+    const config = await getIceServers();
+    console.log('Using connection type:', config.type);
+    peerConnection = new RTCPeerConnection(config.iceServers);
+    
+    // Add event handlers
+    peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+            console.log('ICE candidate:', event.candidate);
+            // Make sure remotePeerId is set when creating the peer connection
+            if (!remotePeerId) {
+                console.warn('No remote peer ID set for ICE candidate');
+                return;
+            }
+            sendSignal('IceCandidate', {
+                room_id: document.getElementById('roomId').value,
+                candidate: JSON.stringify({
+                    foundation: event.candidate.foundation,
+                    component: event.candidate.component,
+                    protocol: event.candidate.protocol,
+                    priority: event.candidate.priority,
+                    address: event.candidate.address,
+                    port: event.candidate.port,
+                    typ: event.candidate.type,
+                    related_address: event.candidate.relatedAddress,
+                    related_port: event.candidate.relatedPort,
+                    usernameFragment: event.candidate.usernameFragment,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex
+                }),
+                from_peer: document.getElementById('peerId').value,
+                to_peer: remotePeerId
+            });
+        }
+    };
+    peerConnection.ontrack = handleTrack;
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log('ICE connection state:', peerConnection.iceConnectionState);
+    };
+    
+    // Add local stream tracks to the connection
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            console.log('Adding track to peer connection:', track.kind);
+            peerConnection.addTrack(track, localStream);
+        });
+    }
+    
+    return peerConnection;
 }
 
 function handleIceCandidate(event) {
@@ -358,109 +465,6 @@ function updateVideoUI() {
         remoteVideo.style.display = 'none';
         localVideo.srcObject = null;
         remoteVideo.srcObject = null;
-    }
-}
-
-async function setupPeerConnection() {
-    try {
-        const stunServer = document.getElementById('stunServer').value;
-        const stunPort = document.getElementById('stunPort').value;
-        const turnUsername = document.getElementById('turnUsername').value;
-        const turnPassword = document.getElementById('turnPassword').value;
-        const connectionType = document.getElementById('connectionType').value;
-        
-        const configuration = {
-            iceServers: [
-                {
-                    urls: [
-                        `stun:${stunServer}:${stunPort}`,
-                        `turn:${stunServer}:${stunPort}`
-                    ],
-                    username: turnUsername,
-                    credential: turnPassword,
-                    credentialType: 'password'
-                }
-            ],
-            iceTransportPolicy: connectionType,  // 'all' or 'relay'
-            bundlePolicy: 'max-bundle',
-            rtcpMuxPolicy: 'require',
-            iceCandidatePoolSize: 10
-        };
-
-        // Add debug logging for connection type
-        console.log('Using connection type:', connectionType);
-        
-        peerConnection = new RTCPeerConnection(configuration);
-        
-        // Add enhanced ICE connection monitoring
-        peerConnection.oniceconnectionstatechange = () => {
-            const state = peerConnection.iceConnectionState;
-            console.log('ICE Connection State:', state);
-            
-            if (state === 'connected') {
-                // Log the selected candidate pair
-                peerConnection.getStats().then(stats => {
-                    stats.forEach(report => {
-                        if (report.type === 'candidate-pair' && report.selected) {
-                            console.log('Selected candidate pair:', {
-                                local: report.localCandidateId,
-                                remote: report.remoteCandidateId,
-                                protocol: report.protocol,
-                                type: connectionType
-                            });
-                        }
-                    });
-                });
-            }
-        };
-
-        // Add ICE gathering monitoring
-        peerConnection.onicegatheringstatechange = () => {
-            console.log('ICE Gathering State:', peerConnection.iceGatheringState);
-        };
-
-        // Add more detailed ICE candidate logging
-        peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-                console.log('ICE candidate:', event.candidate);
-                sendSignal('IceCandidate', {
-                    room_id: document.getElementById('roomId').value,
-                    candidate: JSON.stringify({
-                        foundation: event.candidate.foundation,
-                        component: event.candidate.component,
-                        protocol: event.candidate.protocol,
-                        priority: event.candidate.priority,
-                        address: event.candidate.address,
-                        port: event.candidate.port,
-                        typ: event.candidate.type,
-                        related_address: event.candidate.relatedAddress,
-                        related_port: event.candidate.relatedPort,
-                        usernameFragment: event.candidate.usernameFragment,
-                        sdpMid: event.candidate.sdpMid,
-                        sdpMLineIndex: event.candidate.sdpMLineIndex
-                    }),
-                    from_peer: document.getElementById('peerId').value,
-                    to_peer: remotePeerId
-                });
-            }
-        };
-
-        // Add connection monitoring
-        peerConnection.onconnectionstatechange = handleConnectionStateChange;
-        peerConnection.oniceconnectionstatechange = handleIceConnectionStateChange;
-        peerConnection.ontrack = handleTrackEvent;
-        peerConnection.onicecandidate = handleIceCandidate;
-
-        // Add local stream tracks to the connection
-        localStream.getTracks().forEach(track => {
-            console.log(`Adding track to peer connection: ${track.kind}`);
-            peerConnection.addTrack(track, localStream);
-        });
-
-        return peerConnection;
-    } catch (err) {
-        console.error('Error setting up peer connection:', err);
-        throw err;
     }
 }
 
