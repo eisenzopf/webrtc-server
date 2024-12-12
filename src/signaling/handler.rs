@@ -49,7 +49,7 @@ pub type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
 pub struct MessageHandler {
     rooms: Arc<RwLock<HashMap<String, Room>>>,
     peers: Arc<RwLock<HashMap<String, Vec<(String, Arc<Mutex<WebSocketSender>>)>>>>,
-    media_relay: Arc<MediaRelayManager>,
+    pub media_relay: Arc<MediaRelayManager>,
 }
 
 impl MessageHandler {
@@ -178,14 +178,24 @@ impl MessageHandler {
         Ok(())
     }
 
-    pub async fn handle_message(
-        &self,
-        msg: SignalingMessage,
-        sender: Arc<Mutex<WebSocketSender>>
-    ) -> Result<()> {
-        match msg {
-            SignalingMessage::Join { room_id, peer_id } => {
-                self.handle_join(room_id, peer_id, sender).await
+    pub async fn handle_message(&self, message: SignalingMessage) -> Result<()> {
+        match message {
+            SignalingMessage::EndCall { room_id, peer_id } => {
+                info!("Handling EndCall from peer {} in room {}", peer_id, room_id);
+                self.media_relay.handle_peer_disconnect(&peer_id, &room_id).await?;
+                Ok(())
+            },
+            SignalingMessage::PeerDisconnected { room_id, peer_id } => {
+                info!("Handling peer disconnection for {} in room {}", peer_id, room_id);
+                self.media_relay.handle_peer_disconnect(&peer_id, &room_id).await?;
+                Ok(())
+            },
+            SignalingMessage::Join { room_id, peer_id, sender } => {
+                if let Some(sender) = sender {
+                    self.handle_join(room_id, peer_id, sender).await
+                } else {
+                    Err(Error::Peer("No WebSocket sender provided for Join message".to_string()))
+                }
             }
             SignalingMessage::Offer { room_id, sdp, from_peer, to_peer } => {
                 self.handle_offer(&room_id, &from_peer, &to_peer, &sdp).await
@@ -230,18 +240,10 @@ impl MessageHandler {
             SignalingMessage::MediaError { .. } => {
                 Ok(())
             }
-            SignalingMessage::EndCall { room_id, from_peer } => {
-                info!("Handling EndCall from peer {} in room {}", from_peer, room_id);
-                self.media_relay.handle_peer_disconnect(&from_peer, &room_id).await?;
-            },
-            SignalingMessage::PeerDisconnected { room_id, peer_id } => {
-                info!("Handling peer disconnection for {} in room {}", peer_id, room_id);
-                self.media_relay.handle_peer_disconnect(&peer_id, &room_id).await?;
-            },
             SignalingMessage::CallRequest { room_id, from_peer, to_peers } => {
                 self.handle_call_request(room_id, from_peer, to_peers).await
             }
-            _ => Ok(())
+            _ => Ok(()),
         }
     }
 
