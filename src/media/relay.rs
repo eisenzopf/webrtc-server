@@ -7,6 +7,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use log::{debug, info, warn, error};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
@@ -15,17 +16,22 @@ use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy
 use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
 use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
 use crate::signaling::SignalingMessage;
+use bytes::Bytes;
+use tokio::sync::Mutex;
+use webrtc::data_channel::RTCDataChannel;
+use std::fmt;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MediaRelay {
     pub peer_connection: Arc<RTCPeerConnection>,
     pub audio_track: Option<Arc<TrackLocalStaticRTP>>,
     pub video_track: Option<Arc<TrackLocalStaticRTP>>,
     pub peer_id: String,
+    data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
 }
 
 pub struct MediaRelayManager {
@@ -43,6 +49,16 @@ pub struct MediaStats {
 }
 
 impl MediaRelay {
+    pub fn new(peer_connection: Arc<RTCPeerConnection>, peer_id: String) -> Self {
+        Self {
+            peer_connection,
+            audio_track: None,
+            video_track: None,
+            peer_id,
+            data_channel: Arc::new(Mutex::new(None)),
+        }
+    }
+
     pub async fn get_stats(&self) -> Result<MediaStats> {
         let stats = self.peer_connection.get_stats().await;
 
@@ -69,6 +85,27 @@ impl MediaRelay {
         }
 
         Ok(media_stats)
+    }
+
+    pub async fn send_signal(&self, message: &SignalingMessage) -> Result<()> {
+        if let Ok(msg_str) = serde_json::to_string(message) {
+            let data = Bytes::from(msg_str.into_bytes());
+            
+            let data_channel = self.data_channel.lock().await;
+            if let Some(dc) = data_channel.as_ref() {
+                dc.send(&data).await?;
+                Ok(())
+            } else {
+                Err(Error::Peer("No data channel available".to_string()))
+            }
+        } else {
+            Err(Error::Peer("Failed to serialize message".to_string()))
+        }
+    }
+
+    pub async fn set_data_channel(&self, dc: Arc<RTCDataChannel>) {
+        let mut data_channel = self.data_channel.lock().await;
+        *data_channel = Some(dc);
     }
 }
 
@@ -202,13 +239,14 @@ impl MediaRelayManager {
             })
         }));
 
+        // Create data channel
+        let dc = pc.create_data_channel("signaling", None).await?;
+        
         // Create the MediaRelay instance
-        let relay = MediaRelay {
-            peer_connection: pc,
-            audio_track: None,
-            video_track: None,
-            peer_id: peer_id.clone(),
-        };
+        let relay = MediaRelay::new(pc.clone(), peer_id.clone());
+        
+        // Store the data channel
+        relay.set_data_channel(dc).await;
 
         // Store the relay
         let mut relays = self.relays.write().await;
@@ -270,6 +308,20 @@ impl MediaRelayManager {
 
         info!("Peer {} disconnected from room {}. Remaining peers: {:?}", 
             peer_id, room_id, room_peers);
+
+        // Notify remaining peers about the disconnection
+        for remaining_peer in &room_peers {
+            if let Some(relay) = relays.get(remaining_peer) {
+                let disconnect_msg = SignalingMessage::PeerList {
+                    peers: room_peers.clone(),
+                    room_id: room_id.to_string(),
+                };
+                
+                if let Err(e) = relay.send_signal(&disconnect_msg).await {
+                    error!("Failed to send peer list update to {}: {}", remaining_peer, e);
+                }
+            }
+        }
 
         Ok(())
     }
@@ -346,5 +398,16 @@ impl MediaRelayManager {
 
     pub async fn get_relays(&self) -> Result<HashMap<String, MediaRelay>> {
         Ok(self.relays.read().await.clone())
+    }
+}
+
+impl fmt::Debug for MediaRelay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MediaRelay")
+            .field("peer_id", &self.peer_id)
+            .field("audio_track", &self.audio_track)
+            .field("video_track", &self.video_track)
+            .field("data_channel", &"<RTCDataChannel>")
+            .finish()
     }
 } 

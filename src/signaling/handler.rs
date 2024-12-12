@@ -91,7 +91,10 @@ impl MessageHandler {
         room_peers.push((peer_id.clone(), ws_sender));
 
         let peer_ids: Vec<String> = room_peers.iter().map(|(id, _)| id.clone()).collect();
-        let peer_list_msg = SignalingMessage::PeerList { peers: peer_ids };
+        let peer_list_msg = SignalingMessage::PeerList { 
+            peers: peer_ids,
+            room_id: room_id.clone(),
+        };
 
         for (_, sender) in room_peers {
             let msg_str = serde_json::to_string(&peer_list_msg)?;

@@ -82,14 +82,9 @@ impl RoomManager {
         };
 
         // Create the peer connection
-        let peer_connection = api.new_peer_connection(config).await?;
+        let peer_connection = Arc::new(api.new_peer_connection(config).await?);
 
-        let media_relay = MediaRelay {
-            peer_connection: Arc::new(peer_connection),
-            audio_track: None,
-            video_track: None,
-            peer_id: peer_id.clone(),
-        };
+        let media_relay = MediaRelay::new(peer_connection, peer_id.clone());
 
         room.peers.push((peer_id, media_relay));
         Ok(())

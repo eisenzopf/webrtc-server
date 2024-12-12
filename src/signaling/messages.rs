@@ -21,6 +21,7 @@ pub enum SignalingMessage {
     },
     PeerList {
         peers: Vec<String>,
+        room_id: String,
     },
     Offer {
         room_id: String,
@@ -73,6 +74,6 @@ pub enum SignalingMessage {
 
 impl Default for SignalingMessage {
     fn default() -> Self {
-        SignalingMessage::PeerList { peers: Vec::new() }
+        SignalingMessage::PeerList { peers: Vec::new(), room_id: String::new() }
     }
 } 
