@@ -15,6 +15,10 @@ use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
 use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
 use crate::signaling::SignalingMessage;
 
+pub trait SignalingHandler {
+    fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
 #[derive(Debug, Clone)]
 pub struct MediaRelay {
     pub peer_connection: Arc<RTCPeerConnection>,
@@ -73,7 +77,13 @@ impl MediaRelayManager {
         }
     }
 
-    pub async fn create_relay(&self, peer_id: String) -> Result<MediaRelay> {
+    pub async fn create_relay(
+        &self, 
+        peer_id: String,
+        room_id: String,
+        remote_peer_id: String,
+        handler: Arc<impl SignalingHandler + Send + Sync + 'static>
+    ) -> Result<MediaRelay> {
         // Create a new MediaEngine
         let mut media_engine = MediaEngine::default();
         
@@ -142,21 +152,30 @@ impl MediaRelayManager {
             })
         }));
 
+        // Clone values that will be moved into the closure
+        let room_id_clone = room_id.clone();
+        let remote_peer_id_clone = remote_peer_id.clone();
+        let peer_id_clone = peer_id.clone();
+        let handler_clone = handler.clone();
+
         pc.on_ice_candidate(Box::new(move |c| {
             let peer_id = peer_id_clone.clone();
+            let room_id = room_id_clone.clone();
+            let remote_peer_id = remote_peer_id_clone.clone();
             let handler = handler_clone.clone();
             
             Box::pin(async move {
                 if let Some(c) = c {
+                    let remote_peer_id_ref = remote_peer_id.clone(); // Clone for the message
                     // Send the ICE candidate through signaling
                     let candidate_msg = SignalingMessage::IceCandidate {
-                        room_id: room_id.clone(),
+                        room_id,
                         candidate: serde_json::to_string(&c).unwrap(),
-                        from_peer: peer_id.clone(),
+                        from_peer: peer_id,
                         to_peer: remote_peer_id.clone(),
                     };
                     
-                    if let Err(e) = handler.send_to_peer(&remote_peer_id, &candidate_msg).await {
+                    if let Err(e) = handler.send_to_peer(&remote_peer_id_ref, &candidate_msg).await {
                         error!("Failed to send ICE candidate: {}", e);
                     }
                 }

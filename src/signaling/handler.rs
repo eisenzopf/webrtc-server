@@ -36,6 +36,7 @@ use crate::media::{MediaRelayManager, MediaRelay};
 use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::track::track_local::TrackLocal;
 use log::{info, error};
+use crate::media::relay::SignalingHandler;
 
 pub type WebSocketSender = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
@@ -44,6 +45,7 @@ pub type WebSocketSender = futures_util::stream::SplitSink<
 pub type PeerConnection = (String, Arc<Mutex<WebSocketSender>>);
 pub type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
 
+#[derive(Clone)]
 pub struct MessageHandler {
     rooms: Arc<RwLock<HashMap<String, Room>>>,
     peers: Arc<RwLock<HashMap<String, Vec<(String, Arc<Mutex<WebSocketSender>>)>>>>,
@@ -65,8 +67,15 @@ impl MessageHandler {
         peer_id: String,
         ws_sender: Arc<Mutex<WebSocketSender>>
     ) -> Result<()> {
-        // Create media relay for the new peer
-        let relay = self.media_relay.create_relay(peer_id.clone()).await?;
+        // Create Arc of self (MessageHandler) instead of reference
+        let handler = Arc::new(self.clone());
+        
+        let relay = self.media_relay.create_relay(
+            peer_id.clone(),
+            room_id.clone(),
+            peer_id.clone(), // This might need to be adjusted depending on your peer-to-peer logic
+            handler
+        ).await?;
         
         // Add peer to room with the relay
         let mut rooms = self.rooms.write().await;
@@ -319,5 +328,11 @@ impl MessageHandler {
                 }
             })
         }));
+    }
+}
+
+impl SignalingHandler for MessageHandler {
+    async fn send_to_peer(&self, peer_id: &str, msg: &SignalingMessage) -> Result<()> {
+        self.send_to_peer(peer_id, msg).await
     }
 } 
