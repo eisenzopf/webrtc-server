@@ -135,6 +135,25 @@ async function startCall() {
             return;
         }
 
+        // Clean up any existing peer connection
+        if (peerConnection) {
+            // Remove all existing senders first
+            const senders = peerConnection.getSenders();
+            for (const sender of senders) {
+                peerConnection.removeTrack(sender);
+            }
+            peerConnection.close();
+            peerConnection = null;
+        }
+
+        // Clean up any existing local stream
+        if (localStream) {
+            localStream.getTracks().forEach(track => {
+                track.stop();
+            });
+            localStream = null;
+        }
+
         // Get media stream first
         const constraints = {
             audio: {
@@ -152,11 +171,12 @@ async function startCall() {
         console.log('Requesting media with constraints:', constraints);
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
 
-        // Setup connection with the server's media relay
+        // Setup new peer connection
         await setupPeerConnection();
         
-        // Add tracks to peer connection
+        // Add tracks to the new peer connection
         localStream.getTracks().forEach(track => {
+            console.log('Adding track to peer connection:', track.kind);
             peerConnection.addTrack(track, localStream);
         });
 
@@ -171,6 +191,16 @@ async function startCall() {
     } catch (err) {
         console.error('Error starting call:', err);
         updateStatus('Failed to start call: ' + err.message, true);
+        
+        // Clean up on error
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
+        }
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+        }
     }
 }
 
