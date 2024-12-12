@@ -135,9 +135,31 @@ async function startCall() {
             return;
         }
 
+        // Get media stream first
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: enableVideo ? {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 }
+            } : false
+        };
+
+        console.log('Requesting media with constraints:', constraints);
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+
         // Setup connection with the server's media relay
         await setupPeerConnection();
         
+        // Add tracks to peer connection
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+
         // Send CallRequest to initiate server-relayed call
         sendSignal('CallRequest', {
             room_id: document.getElementById('roomId').value,
@@ -145,8 +167,6 @@ async function startCall() {
             to_peers: selectedPeers
         });
 
-        // The server will handle creating the media relay and routing
-        // We'll wait for the server to send us back the offer
         updateStatus('Initiating server-relayed call...');
     } catch (err) {
         console.error('Error starting call:', err);
