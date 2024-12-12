@@ -6,6 +6,7 @@ use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use log::{debug, info, warn, error};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
@@ -77,7 +78,6 @@ impl MediaRelayManager {
             relays: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             turn_config: Some(RTCIceServer {
                 urls: vec![
-                    format!("stun:{}:{}", turn_ip, turn_port),
                     format!("turn:{}:{}", turn_ip, turn_port),
                 ],
                 username: username.to_string(),
