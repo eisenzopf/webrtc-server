@@ -29,6 +29,7 @@ pub struct MediaRelay {
 
 pub struct MediaRelayManager {
     relays: Arc<tokio::sync::RwLock<std::collections::HashMap<String, MediaRelay>>>,
+    turn_config: Option<RTCIceServer>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,9 +72,24 @@ impl MediaRelay {
 }
 
 impl MediaRelayManager {
+    pub fn new_with_turn(turn_ip: &str, turn_port: u16, username: &str, password: &str) -> Self {
+        Self {
+            relays: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            turn_config: Some(RTCIceServer {
+                urls: vec![
+                    format!("turn:{}:{}", turn_ip, turn_port),
+                ],
+                username: Some(username.to_string()),
+                credential: Some(password.to_string()),
+                ..Default::default()
+            }),
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             relays: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            turn_config: None,
         }
     }
 
@@ -84,6 +100,17 @@ impl MediaRelayManager {
         remote_peer_id: String,
         handler: Arc<impl SignalingHandler + Send + Sync + 'static>
     ) -> Result<MediaRelay> {
+        let mut ice_servers = vec![
+            RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            },
+        ];
+
+        if let Some(turn_config) = &self.turn_config {
+            ice_servers.push(turn_config.clone());
+        }
+
         // Create a new MediaEngine
         let mut media_engine = MediaEngine::default();
         
@@ -97,12 +124,7 @@ impl MediaRelayManager {
 
         // Create ICE servers configuration
         let config = RTCConfiguration {
-            ice_servers: vec![
-                RTCIceServer {
-                    urls: vec![format!("stun:{}:{}", "192.168.1.68", "3478")],
-                    ..Default::default()
-                },
-            ],
+            ice_servers,
             ice_transport_policy: RTCIceTransportPolicy::Relay,
             bundle_policy: RTCBundlePolicy::MaxBundle,
             rtcp_mux_policy: RTCRtcpMuxPolicy::Require,

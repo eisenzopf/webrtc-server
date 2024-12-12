@@ -11,6 +11,7 @@ use webrtc_server::media::MediaRelayManager;
 use webrtc_server::signaling::handler::MessageHandler;
 use webrtc_server::signaling::server::run_debug_server;
 use log::{info, warn, error};
+use webrtc_server::signaling::turn::TurnServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,7 +19,25 @@ async fn main() -> Result<()> {
     env_logger::init_from_env(Env::default().default_filter_or("info"));
     info!("Starting WebRTC server...");
 
-    let media_relay = Arc::new(MediaRelayManager::new());
+    // Start TURN server
+    let turn_server = TurnServer::new(
+        "192.168.1.68",  // Your public IP
+        3478,            // TURN port
+        "webrtc.rs",     // Realm
+        vec![
+            ("testuser".to_string(), "testpass".to_string()),
+            // Add more credentials as needed
+        ],
+    ).await?;
+
+    // Update WebRTC configuration to use the TURN server
+    let media_relay = Arc::new(MediaRelayManager::new_with_turn(
+        "192.168.1.68",  // TURN server IP
+        3478,            // TURN server port
+        "testuser",      // TURN username
+        "testpass",      // TURN password
+    ));
+
     let handler = Arc::new(MessageHandler::new(media_relay.clone()));
 
     // Start media relay monitoring in a separate task
@@ -65,6 +84,9 @@ async fn main() -> Result<()> {
         }
         _ = shutdown_rx.recv() => {
             info!("Shutting down server...");
+            if let Err(e) = turn_server.close().await {
+                error!("Error shutting down TURN server: {}", e);
+            }
         }
     }
 
