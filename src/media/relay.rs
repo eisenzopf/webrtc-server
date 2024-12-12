@@ -78,6 +78,7 @@ impl MediaRelayManager {
             relays: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             turn_config: Some(RTCIceServer {
                 urls: vec![
+                    format!("stun:{}:{}", turn_ip, turn_port),
                     format!("turn:{}:{}", turn_ip, turn_port),
                 ],
                 username: username.to_string(),
@@ -102,12 +103,7 @@ impl MediaRelayManager {
         remote_peer_id: String,
         handler: Arc<impl SignalingHandler + Send + Sync + 'static>
     ) -> Result<MediaRelay> {
-        let mut ice_servers = vec![
-            RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                ..Default::default()
-            },
-        ];
+        let mut ice_servers = vec![];
 
         if let Some(turn_config) = &self.turn_config {
             ice_servers.push(turn_config.clone());
@@ -127,7 +123,7 @@ impl MediaRelayManager {
         // Create ICE servers configuration
         let config = RTCConfiguration {
             ice_servers,
-            ice_transport_policy: RTCIceTransportPolicy::Relay,
+            ice_transport_policy: RTCIceTransportPolicy::All,
             bundle_policy: RTCBundlePolicy::MaxBundle,
             rtcp_mux_policy: RTCRtcpMuxPolicy::Require,
             ice_candidate_pool_size: 10,

@@ -310,6 +310,7 @@ async function setupPeerConnection() {
         const stunPort = document.getElementById('stunPort').value;
         const turnUsername = document.getElementById('turnUsername').value;
         const turnPassword = document.getElementById('turnPassword').value;
+        const connectionType = document.getElementById('connectionType').value;
         
         const configuration = {
             iceServers: [
@@ -323,23 +324,33 @@ async function setupPeerConnection() {
                     credentialType: 'password'
                 }
             ],
-            iceTransportPolicy: 'all',
+            iceTransportPolicy: connectionType,  // 'all' or 'relay'
             bundlePolicy: 'max-bundle',
             rtcpMuxPolicy: 'require',
             iceCandidatePoolSize: 10
         };
 
-        console.log('ICE Server Configuration:', configuration);
+        // Add debug logging for connection type
+        console.log('Using connection type:', connectionType);
+        
         peerConnection = new RTCPeerConnection(configuration);
-
-        // Add ICE connection monitoring
+        
+        // Add enhanced ICE connection monitoring
         peerConnection.oniceconnectionstatechange = () => {
-            console.log('ICE Connection State:', peerConnection.iceConnectionState);
-            if (peerConnection.iceConnectionState === 'connected') {
+            const state = peerConnection.iceConnectionState;
+            console.log('ICE Connection State:', state);
+            
+            if (state === 'connected') {
+                // Log the selected candidate pair
                 peerConnection.getStats().then(stats => {
                     stats.forEach(report => {
                         if (report.type === 'candidate-pair' && report.selected) {
-                            console.log('Selected ICE Candidate Pair:', report);
+                            console.log('Selected candidate pair:', {
+                                local: report.localCandidateId,
+                                remote: report.remoteCandidateId,
+                                protocol: report.protocol,
+                                type: connectionType
+                            });
                         }
                     });
                 });

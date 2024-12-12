@@ -46,6 +46,13 @@
             <label for="turnPassword">TURN Password:</label>
             <input type="password" id="turnPassword" value="testpass">
         </div>
+        <div>
+            <label for="connectionType">Connection Type:</label>
+            <select id="connectionType">
+                <option value="all">Auto (Try direct first)</option>
+                <option value="relay">Force TURN Relay</option>
+            </select>
+        </div>
         <button onclick="connect()">Connect to Server</button>
         <button onclick="startCall()">Start Call</button>
         <button onclick="endCall()">End Call</button>
