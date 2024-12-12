@@ -3,6 +3,7 @@ let isDisconnecting = false;
 let activeCallRequests = new Set();
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
+let iceCandidateQueue = [];
 
 async function connect() {
     try {
@@ -292,6 +293,18 @@ async function handleOfferMessage(message) {
             from_peer: document.getElementById('peerId').value,
             to_peer: message.from_peer
         });
+
+        if (iceCandidateQueue.length > 0) {
+            console.log(`Processing ${iceCandidateQueue.length} queued ICE candidates`);
+            while (iceCandidateQueue.length) {
+                const candidate = iceCandidateQueue.shift();
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                } catch (err) {
+                    console.error('Error adding queued ICE candidate:', err);
+                }
+            }
+        }
     } catch (err) {
         console.error("Error handling offer:", err);
     }
@@ -337,6 +350,18 @@ async function handleAnswerMessage(message) {
         } else {
             console.log("Ignoring answer - not in have-local-offer state, current state:", peerConnection.signalingState);
         }
+
+        if (iceCandidateQueue.length > 0) {
+            console.log(`Processing ${iceCandidateQueue.length} queued ICE candidates`);
+            while (iceCandidateQueue.length) {
+                const candidate = iceCandidateQueue.shift();
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                } catch (err) {
+                    console.error('Error adding queued ICE candidate:', err);
+                }
+            }
+        }
     } catch (err) {
         console.error("Error handling answer:", err);
         console.error("Error details:", err.message);
@@ -360,6 +385,13 @@ async function handleIceCandidateMessage(message) {
             sdpMLineIndex: 0,
             usernameFragment: undefined
         });
+        
+        // If remote description isn't set yet, queue the candidate
+        if (!peerConnection.remoteDescription) {
+            console.log('Queueing ICE candidate until remote description is set');
+            iceCandidateQueue.push(candidate);
+            return;
+        }
         
         console.log('Adding ICE candidate:', candidate);
         await peerConnection.addIceCandidate(candidate);
