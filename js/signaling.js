@@ -233,6 +233,23 @@ async function handleCallResponseMessage(message) {
 async function handleOfferMessage(message) {
     console.log("Received offer from:", message.from_peer);
     try {
+        // Get media stream first
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: enableVideo ? {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 }
+            } : false
+        };
+
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        
+        // Now set up peer connection
         if (!peerConnection) {
             await setupPeerConnection();
         }
@@ -269,13 +286,9 @@ async function handleOfferMessage(message) {
             }
         });
 
-        // Get the complete local description with ICE candidates
-        const completeAnswer = peerConnection.localDescription;
-
-        console.log("Sending answer to:", message.from_peer);
         sendSignal('Answer', {
             room_id: document.getElementById('roomId').value,
-            sdp: completeAnswer.sdp,
+            sdp: answer.sdp,
             from_peer: document.getElementById('peerId').value,
             to_peer: message.from_peer
         });
@@ -340,10 +353,12 @@ async function handleIceCandidateMessage(message) {
     }
     
     try {
+        const candidateData = JSON.parse(message.candidate);
         const candidate = new RTCIceCandidate({
-            candidate: message.candidate.candidate,
-            sdpMid: message.candidate.sdpMid,
-            sdpMLineIndex: message.candidate.sdpMLineIndex
+            candidate: `candidate:${candidateData.foundation} ${candidateData.component} ${candidateData.protocol} ${candidateData.priority} ${candidateData.address} ${candidateData.port} typ ${candidateData.typ}${candidateData.related_address ? ` raddr ${candidateData.related_address} rport ${candidateData.related_port}` : ''}`,
+            sdpMid: '0',  // Default to first media section
+            sdpMLineIndex: 0,
+            usernameFragment: undefined
         });
         
         console.log('Adding ICE candidate:', candidate);
