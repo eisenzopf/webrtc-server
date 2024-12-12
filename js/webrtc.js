@@ -306,60 +306,63 @@ function updateVideoUI() {
 
 async function setupPeerConnection() {
     try {
-        // Get STUN server configuration from input fields
-        const stunServer = document.getElementById('stunServer').value || '127.0.0.1';
-        const stunPort = document.getElementById('stunPort').value || '3478';
-        const stunUrl = `stun:${stunServer}:${stunPort}`;
-
+        const stunServer = document.getElementById('stunServer').value;
+        const stunPort = document.getElementById('stunPort').value;
+        const turnUsername = document.getElementById('turnUsername').value;
+        const turnPassword = document.getElementById('turnPassword').value;
+        
         const configuration = {
             iceServers: [
-                { 
-                    urls: stunUrl,
-                    username: "",
-                    credential: ""
+                {
+                    urls: `stun:${stunServer}:${stunPort}`
+                },
+                {
+                    urls: `turn:${stunServer}:${stunPort}`,
+                    username: turnUsername,
+                    credential: turnPassword
                 }
             ],
+            iceTransportPolicy: 'all',
             bundlePolicy: 'balanced',
             rtcpMuxPolicy: 'require',
             iceCandidatePoolSize: 10
         };
 
-        // Only create a new connection if one doesn't exist or is closed
-        if (peerConnection && peerConnection.connectionState !== 'closed') {
-            console.log("Peer connection already exists");
-            return peerConnection;
-        }
-
-        // Add specific audio constraints
-        const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: enableVideo ? {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                frameRate: { ideal: 30 }
-            } : false
+        // Add debug logging for ICE gathering
+        peerConnection = new RTCPeerConnection(configuration);
+        
+        peerConnection.onicegatheringstatechange = () => {
+            console.log('ICE gathering state:', peerConnection.iceGatheringState);
         };
 
-        // Get user media with logging
-        console.log('Requesting user media with constraints:', constraints);
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        
-        // Verify audio tracks exist
-        const audioTracks = localStream.getAudioTracks();
-        console.log('Local audio tracks:', audioTracks);
-        
-        if (audioTracks.length === 0) {
-            throw new Error('No audio track found in local stream');
-        }
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log('ICE connection state:', peerConnection.iceConnectionState);
+            if (peerConnection.iceConnectionState === 'connected') {
+                // Log which candidate pair was selected
+                peerConnection.getStats().then(stats => {
+                    stats.forEach(report => {
+                        if (report.type === 'candidate-pair' && report.selected) {
+                            console.log('Selected candidate pair:', report);
+                        }
+                    });
+                });
+            }
+        };
 
-        updateVideoUI();
-
-        console.log("Creating new RTCPeerConnection with configuration:", configuration);
-        peerConnection = new RTCPeerConnection(configuration);
+        // Add more detailed ICE candidate logging
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                console.log('New ICE candidate:', {
+                    type: event.candidate.type,
+                    protocol: event.candidate.protocol,
+                    address: event.candidate.address,
+                    port: event.candidate.port,
+                    relatedAddress: event.candidate.relatedAddress,
+                    relatedPort: event.candidate.relatedPort
+                });
+                handleIceCandidate(event);
+            }
+        };
 
         // Add connection monitoring
         peerConnection.onconnectionstatechange = handleConnectionStateChange;
@@ -376,7 +379,46 @@ async function setupPeerConnection() {
         return peerConnection;
     } catch (err) {
         console.error('Error setting up peer connection:', err);
-        updateStatus('Failed to access microphone. Please grant permissions and try again.', true);
         throw err;
     }
+}
+
+function debugIceFailure() {
+    if (!peerConnection) return;
+    
+    peerConnection.getStats().then(stats => {
+        let iceCandidates = {
+            local: [],
+            remote: [],
+            pairs: []
+        };
+
+        stats.forEach(report => {
+            if (report.type === 'local-candidate') {
+                iceCandidates.local.push({
+                    type: report.candidateType,
+                    protocol: report.protocol,
+                    address: report.address,
+                    port: report.port
+                });
+            } else if (report.type === 'remote-candidate') {
+                iceCandidates.remote.push({
+                    type: report.candidateType,
+                    protocol: report.protocol,
+                    address: report.address,
+                    port: report.port
+                });
+            } else if (report.type === 'candidate-pair') {
+                iceCandidates.pairs.push({
+                    state: report.state,
+                    nominated: report.nominated,
+                    selected: report.selected,
+                    localCandidateId: report.localCandidateId,
+                    remoteCandidateId: report.remoteCandidateId
+                });
+            }
+        });
+
+        console.log('ICE Candidates Debug:', iceCandidates);
+    });
 }

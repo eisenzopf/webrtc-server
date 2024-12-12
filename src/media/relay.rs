@@ -79,8 +79,8 @@ impl MediaRelayManager {
                 urls: vec![
                     format!("turn:{}:{}", turn_ip, turn_port),
                 ],
-                username: Some(username.to_string()),
-                credential: Some(password.to_string()),
+                username: username.to_string(),
+                credential: password.to_string(),
                 ..Default::default()
             }),
         }

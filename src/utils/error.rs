@@ -1,5 +1,6 @@
 use std::error::Error as StdError;
 use std::fmt;
+use std::net::AddrParseError;
 
 #[derive(Debug)]
 pub enum Error {
@@ -9,6 +10,8 @@ pub enum Error {
     Peer(String),
     Media(String),
     IO(std::io::Error),
+    Turn(turn::Error),
+    AddrParse(AddrParseError),
 }
 
 impl fmt::Display for Error {
@@ -20,6 +23,8 @@ impl fmt::Display for Error {
             Error::Peer(e) => write!(f, "Peer error: {}", e),
             Error::Media(e) => write!(f, "Media error: {}", e),
             Error::IO(e) => write!(f, "IO error: {}", e),
+            Error::Turn(e) => write!(f, "TURN error: {}", e),
+            Error::AddrParse(e) => write!(f, "Address parse error: {}", e),
         }
     }
 }
@@ -41,6 +46,24 @@ impl From<webrtc::Error> for Error {
 impl From<tokio_tungstenite::tungstenite::Error> for Error {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
         Error::WebSocket(err)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Error::IO(error)
+    }
+}
+
+impl From<turn::Error> for Error {
+    fn from(error: turn::Error) -> Self {
+        Error::Turn(error)
+    }
+}
+
+impl From<AddrParseError> for Error {
+    fn from(error: AddrParseError) -> Self {
+        Error::AddrParse(error)
     }
 }
 

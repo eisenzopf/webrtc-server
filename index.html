@@ -35,10 +35,16 @@
             <input type="text" id="peerId">
         </div>
         <div>
-            <label for="stunServer">STUN Server:</label>
+            <label for="stunServer">STUN/TURN Server:</label>
             <input type="text" id="stunServer" value="192.168.1.68">
             <label for="stunPort">Port:</label>
             <input type="number" id="stunPort" value="3478">
+        </div>
+        <div>
+            <label for="turnUsername">TURN Username:</label>
+            <input type="text" id="turnUsername" value="testuser">
+            <label for="turnPassword">TURN Password:</label>
+            <input type="password" id="turnPassword" value="testpass">
         </div>
         <button onclick="connect()">Connect to Server</button>
         <button onclick="startCall()">Start Call</button>

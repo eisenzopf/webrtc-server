@@ -69,7 +69,6 @@ impl TurnServer {
             realm: realm.to_owned(),
             auth_handler: Arc::new(TurnAuthHandler::new(cred_map)),
             channel_bind_timeout: Duration::from_secs(0),
-            alloc_close_notify: None,
         })
         .await?;
 
