@@ -75,69 +75,82 @@ impl SignalingServer {
         let mut current_peer_id: Option<String> = None;
         let mut current_room_id: Option<String> = None;
 
-        while let Some(msg) = ws_receiver.next().await {
-            match msg {
-                Ok(msg) => {
-                    if let Ok(msg_str) = msg.to_text() {
-                        debug!("Received message from {}: {}", peer_addr, msg_str);
-                        if let Ok(signal_msg) = serde_json::from_str(msg_str) {
-                            // Update peer and room IDs when handling Join message
-                            if let SignalingMessage::Join { peer_id, room_id, .. } = &signal_msg {
-                                current_peer_id = Some(peer_id.clone());
-                                current_room_id = Some(room_id.clone());
-                                
-                                // Set up media relay handlers after Join
-                                if let Some(relay) = handler.get_peer_relay(peer_id).await? {
-                                    let relay_clone = relay.clone();
-                                    let handler_clone = handler.clone();
-                                    let peer_id_clone = peer_id.clone();
+        // Handle disconnection
+        let media_relay = handler.media_relay.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(msg) => {
+                        if let Ok(msg_str) = msg.to_text() {
+                            debug!("Received message from {}: {}", peer_addr, msg_str);
+                            if let Ok(signal_msg) = serde_json::from_str(msg_str) {
+                                // Update peer and room IDs when handling Join message
+                                if let SignalingMessage::Join { peer_id, room_id, .. } = &signal_msg {
+                                    current_peer_id = Some(peer_id.clone());
+                                    current_room_id = Some(room_id.clone());
                                     
-                                    relay.peer_connection.on_track(Box::new(move |track, _, _| {
-                                        let relay = relay_clone.clone();
-                                        let handler = handler_clone.clone();
-                                        let peer_id = peer_id_clone.clone();
+                                    // Set up media relay handlers after Join
+                                    if let Some(relay) = handler.get_peer_relay(peer_id).await? {
+                                        let relay_clone = relay.clone();
+                                        let handler_clone = handler.clone();
+                                        let peer_id_clone = peer_id.clone();
                                         
-                                        Box::pin(async move {
-                                            // Create a new local track for relaying based on track type
-                                            let track_id = match track.kind() {
-                                                RTPCodecType::Audio => format!("audio-relay-{}", track.stream_id()),
-                                                RTPCodecType::Video => format!("video-relay-{}", track.stream_id()),
-                                                _ => {
-                                                    error!("Unsupported track type: {:?}", track.kind());
-                                                    return;
-                                                }
-                                            };
-
-                                            debug!("Creating new {} relay track: {}", track.kind(), track_id);
+                                        relay.peer_connection.on_track(Box::new(move |track, _, _| {
+                                            let relay = relay_clone.clone();
+                                            let handler = handler_clone.clone();
+                                            let peer_id = peer_id_clone.clone();
                                             
-                                            let local_track = Arc::new(TrackLocalStaticRTP::new(
-                                                track.codec().capability,
-                                                track_id,
-                                                track.stream_id(),
-                                            ));
+                                            Box::pin(async move {
+                                                // Create a new local track for relaying based on track type
+                                                let track_id = match track.kind() {
+                                                    RTPCodecType::Audio => format!("audio-relay-{}", track.stream_id()),
+                                                    RTPCodecType::Video => format!("video-relay-{}", track.stream_id()),
+                                                    _ => {
+                                                        error!("Unsupported track type: {:?}", track.kind());
+                                                        return;
+                                                    }
+                                                };
 
-                                            // Forward this track to all other peers in the room
-                                            if let Err(e) = handler.broadcast_track(&peer_id, local_track).await {
-                                                error!("Failed to broadcast {} track: {}", track.kind(), e);
-                                            }
-                                        })
-                                    }));
+                                                debug!("Creating new {} relay track: {}", track.kind(), track_id);
+                                                
+                                                let local_track = Arc::new(TrackLocalStaticRTP::new(
+                                                    track.codec().capability,
+                                                    track_id,
+                                                    track.stream_id(),
+                                                ));
+
+                                                // Forward this track to all other peers in the room
+                                                if let Err(e) = handler.broadcast_track(&peer_id, local_track).await {
+                                                    error!("Failed to broadcast {} track: {}", track.kind(), e);
+                                                }
+                                            })
+                                        }));
+                                    }
                                 }
+                                
+                                handler.handle_message(
+                                    signal_msg,
+                                    ws_sender.clone(),
+                                ).await?;
                             }
-                            
-                            handler.handle_message(
-                                signal_msg,
-                                ws_sender.clone(),
-                            ).await?;
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!("WebSocket error: {}", e);
-                    break;
+                    Err(e) => {
+                        error!("WebSocket error for peer {}: {}", peer_addr, e);
+                        // Handle disconnection
+                        if let Err(e) = media_relay.handle_peer_disconnect(&peer_addr, "").await {
+                            error!("Error handling peer disconnect: {}", e);
+                        }
+                        break;
+                    }
                 }
             }
-        }
+            // Handle normal closure
+            info!("WebSocket closed for peer {}", peer_addr);
+            if let Err(e) = media_relay.handle_peer_disconnect(&peer_addr, "").await {
+                error!("Error handling peer disconnect: {}", e);
+            }
+        });
 
         Ok(())
     }

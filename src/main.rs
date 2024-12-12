@@ -40,11 +40,16 @@ async fn main() -> Result<()> {
 
     let handler = Arc::new(MessageHandler::new(media_relay.clone()));
 
-    // Start media relay monitoring in a separate task
-    let monitor_relay = media_relay.clone();
-    let monitor_handle = tokio::spawn(async move {
-        info!("Starting media relay monitoring...");
-        monitor_relay.monitor_relays().await;
+    // Start the cleanup task
+    let cleanup_manager = media_relay.clone();
+    tokio::spawn(async move {
+        cleanup_manager.cleanup_stale_relays().await;
+    });
+
+    // Start the monitoring task
+    let monitor_manager = media_relay.clone();
+    tokio::spawn(async move {
+        monitor_manager.monitor_relays().await;
     });
 
     // Start debug server in a separate task
@@ -91,7 +96,6 @@ async fn main() -> Result<()> {
     }
 
     // Clean up monitoring tasks
-    monitor_handle.abort();
     debug_handle.abort();
 
     info!("Server shutdown complete");

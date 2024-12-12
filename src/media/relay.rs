@@ -240,8 +240,77 @@ impl MediaRelayManager {
         if let Some(relay) = relays.remove(peer_id) {
             // Close the peer connection
             relay.peer_connection.close().await?;
+            info!("Removed relay for peer {}", peer_id);
+            
+            // Get current relay count
+            let relay_count = relays.len();
+            info!("Active relays remaining: {}", relay_count);
+        } else {
+            warn!("Attempted to remove non-existent relay for peer {}", peer_id);
         }
         Ok(())
+    }
+
+    pub async fn handle_peer_disconnect(&self, peer_id: &str, room_id: &str) -> Result<()> {
+        // Remove the relay
+        self.remove_relay(peer_id).await?;
+        
+        // Get remaining peers in the room to notify them
+        let relays = self.relays.read().await;
+        let room_peers: Vec<String> = relays
+            .iter()
+            .filter_map(|(id, _)| {
+                if id != peer_id {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        info!("Peer {} disconnected from room {}. Remaining peers: {:?}", 
+            peer_id, room_id, room_peers);
+
+        Ok(())
+    }
+
+    pub async fn cleanup_stale_relays(&self) {
+        let monitor_interval = Duration::from_secs(30); // Check every 30 seconds
+        loop {
+            let mut relays = self.relays.write().await;
+            let mut stale_peers = Vec::new();
+
+            // Check each peer connection's state
+            for (peer_id, relay) in relays.iter() {
+                let connection_state = relay.peer_connection.connection_state();
+                match connection_state {
+                    webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed |
+                    webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed |
+                    webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Disconnected => {
+                        stale_peers.push(peer_id.clone());
+                        warn!("Found stale peer connection for {}: {:?}", peer_id, connection_state);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Remove stale peers
+            for peer_id in stale_peers {
+                if let Some(relay) = relays.remove(&peer_id) {
+                    if let Err(e) = relay.peer_connection.close().await {
+                        error!("Error closing connection for stale peer {}: {}", peer_id, e);
+                    }
+                    info!("Removed stale relay for peer {}", peer_id);
+                }
+            }
+
+            drop(relays); // Release the write lock
+            tokio::time::sleep(monitor_interval).await;
+        }
+    }
+
+    pub async fn get_active_peer_count(&self) -> usize {
+        self.relays.read().await.len()
     }
 
     pub async fn get_relay(&self, peer_id: &str) -> Option<MediaRelay> {

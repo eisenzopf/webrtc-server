@@ -230,9 +230,14 @@ impl MessageHandler {
             SignalingMessage::MediaError { .. } => {
                 Ok(())
             }
-            SignalingMessage::EndCall { .. } => {
-                Ok(())
-            }
+            SignalingMessage::EndCall { room_id, from_peer } => {
+                info!("Handling EndCall from peer {} in room {}", from_peer, room_id);
+                self.media_relay.handle_peer_disconnect(&from_peer, &room_id).await?;
+            },
+            SignalingMessage::PeerDisconnected { room_id, peer_id } => {
+                info!("Handling peer disconnection for {} in room {}", peer_id, room_id);
+                self.media_relay.handle_peer_disconnect(&peer_id, &room_id).await?;
+            },
             SignalingMessage::CallRequest { room_id, from_peer, to_peers } => {
                 self.handle_call_request(room_id, from_peer, to_peers).await
             }
