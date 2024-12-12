@@ -77,10 +77,12 @@ impl MediaRelayManager {
             relays: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             turn_config: Some(RTCIceServer {
                 urls: vec![
+                    format!("stun:{}:{}", turn_ip, turn_port),
                     format!("turn:{}:{}", turn_ip, turn_port),
                 ],
                 username: username.to_string(),
                 credential: password.to_string(),
+                credential_type: RTCIceCredentialType::Password,
                 ..Default::default()
             }),
         }

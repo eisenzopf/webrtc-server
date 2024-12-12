@@ -314,39 +314,41 @@ async function setupPeerConnection() {
         const configuration = {
             iceServers: [
                 {
-                    urls: `stun:${stunServer}:${stunPort}`
-                },
-                {
-                    urls: `turn:${stunServer}:${stunPort}`,
+                    urls: [
+                        `stun:${stunServer}:${stunPort}`,
+                        `turn:${stunServer}:${stunPort}`
+                    ],
                     username: turnUsername,
-                    credential: turnPassword
+                    credential: turnPassword,
+                    credentialType: 'password'
                 }
             ],
             iceTransportPolicy: 'all',
-            bundlePolicy: 'balanced',
+            bundlePolicy: 'max-bundle',
             rtcpMuxPolicy: 'require',
             iceCandidatePoolSize: 10
         };
 
-        // Add debug logging for ICE gathering
+        console.log('ICE Server Configuration:', configuration);
         peerConnection = new RTCPeerConnection(configuration);
-        
-        peerConnection.onicegatheringstatechange = () => {
-            console.log('ICE gathering state:', peerConnection.iceGatheringState);
-        };
 
+        // Add ICE connection monitoring
         peerConnection.oniceconnectionstatechange = () => {
-            console.log('ICE connection state:', peerConnection.iceConnectionState);
+            console.log('ICE Connection State:', peerConnection.iceConnectionState);
             if (peerConnection.iceConnectionState === 'connected') {
-                // Log which candidate pair was selected
                 peerConnection.getStats().then(stats => {
                     stats.forEach(report => {
                         if (report.type === 'candidate-pair' && report.selected) {
-                            console.log('Selected candidate pair:', report);
+                            console.log('Selected ICE Candidate Pair:', report);
                         }
                     });
                 });
             }
+        };
+
+        // Add ICE gathering monitoring
+        peerConnection.onicegatheringstatechange = () => {
+            console.log('ICE Gathering State:', peerConnection.iceGatheringState);
         };
 
         // Add more detailed ICE candidate logging
