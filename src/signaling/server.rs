@@ -1,6 +1,6 @@
 use crate::utils::{Error, Result};
 use crate::signaling::handler::MessageHandler;
-use crate::signaling::SignalingMessage;
+use crate::types::{SignalingMessage, WebSocketSender};
 use tokio::net::TcpListener;
 use std::sync::Arc;
 use tokio_tungstenite::accept_async;
@@ -94,7 +94,7 @@ impl SignalingServer {
                     error!("WebSocket error for peer {}: {}", peer_addr, e);
                     // Handle disconnection with the correct peer_id and room_id
                     if let (Some(peer_id), Some(room_id)) = (&current_peer_id, &current_room_id) {
-                        if let Err(e) = media_relay.handle_peer_disconnect(peer_id, room_id).await {
+                        if let Err(e) = handler.handle_peer_disconnect(peer_id, room_id).await {
                             error!("Error handling peer disconnect: {}", e);
                         }
                     }
@@ -106,7 +106,7 @@ impl SignalingServer {
         // Handle normal closure
         if let (Some(peer_id), Some(room_id)) = (current_peer_id, current_room_id) {
             info!("WebSocket closed for peer {} in room {}", peer_id, room_id);
-            if let Err(e) = media_relay.handle_peer_disconnect(&peer_id, &room_id).await {
+            if let Err(e) = handler.handle_peer_disconnect(&peer_id, &room_id).await {
                 error!("Error handling peer disconnect: {}", e);
             }
         }

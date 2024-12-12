@@ -18,12 +18,11 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 use std::time::SystemTime;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub enum MediaType {
-    Audio,
-    Video,
-    Screen,
-}
+// Re-export room types
+pub use crate::room::state::{Room, MediaSettings, MediaType};
+
+// Define WebSocketSender type
+pub type WebSocketSender = SplitSink<WebSocketStream<TcpStream>, Message>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "message_type")]
@@ -31,6 +30,8 @@ pub enum SignalingMessage {
     Join {
         room_id: String,
         peer_id: String,
+        #[serde(skip)]
+        sender: Option<Arc<Mutex<WebSocketSender>>>,
     },
     Disconnect {
         room_id: String,
@@ -38,6 +39,7 @@ pub enum SignalingMessage {
     },
     PeerList {
         peers: Vec<String>,
+        room_id: String,
     },
     Offer {
         room_id: String,
@@ -66,7 +68,20 @@ pub enum SignalingMessage {
         error_type: String,
         description: String,
         peer_id: String,
-    }
+    },
+    EndCall {
+        room_id: String,
+        peer_id: String,
+    },
+    PeerDisconnected {
+        room_id: String,
+        peer_id: String,
+    },
+    CallRequest {
+        room_id: String,
+        from_peer: String,
+        to_peers: Vec<String>,
+    },
 }
 
 pub type PeerConnection = (String, Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>);
@@ -75,7 +90,8 @@ pub type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
 impl Default for SignalingMessage {
     fn default() -> Self {
         SignalingMessage::PeerList { 
-            peers: Vec::new() 
+            peers: Vec::new(), 
+            room_id: String::new() 
         }
     }
 }
@@ -88,15 +104,6 @@ pub struct MediaRelay {
     pub peer_id: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Room {
-    pub id: String,
-    pub peers: Vec<PeerConnection>,
-    pub media_settings: MediaSettings,
-    pub media_relays: HashMap<String, MediaRelay>,
-    pub recording_enabled: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallMetadata {
     pub room_id: String,
@@ -104,33 +111,4 @@ pub struct CallMetadata {
     pub end_time: Option<SystemTime>,
     pub participants: Vec<String>,
     pub recording_path: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MediaSettings {
-    pub max_participants: usize,
-    pub allowed_media_types: Vec<MediaType>,
-    pub bandwidth_limit: Option<u32>,
-}
-
-impl Default for MediaSettings {
-    fn default() -> Self {
-        Self {
-            max_participants: 10,
-            allowed_media_types: vec![MediaType::Audio],
-            bandwidth_limit: None,
-        }
-    }
-}
-
-impl Default for Room {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            peers: Vec::new(),
-            media_settings: MediaSettings::default(),
-            media_relays: HashMap::new(),
-            recording_enabled: false,
-        }
-    }
 }

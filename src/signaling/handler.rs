@@ -1,7 +1,7 @@
 use crate::utils::{Error, Result};
 use crate::room::Room;
 use crate::metrics::ConnectionMetrics;
-use crate::signaling::messages::SignalingMessage;
+use crate::types::{SignalingMessage, WebSocketSender};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use std::collections::HashMap;
@@ -38,10 +38,6 @@ use webrtc::track::track_local::TrackLocal;
 use log::{info, error};
 use crate::media::relay::SignalingHandler;
 
-pub type WebSocketSender = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    Message
->;
 pub type PeerConnection = (String, Arc<Mutex<WebSocketSender>>);
 pub type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
 
@@ -338,6 +334,48 @@ impl MessageHandler {
                 }
             })
         }));
+    }
+
+    pub async fn handle_peer_disconnect(&self, peer_id: &str, room_id: &str) -> Result<()> {
+        // Remove peer from room
+        {
+            let mut rooms = self.rooms.write().await;
+            if let Some(room) = rooms.get_mut(room_id) {
+                if let Some(pos) = room.peers.iter().position(|(id, _)| id == peer_id) {
+                    room.peers.remove(pos);
+                }
+            }
+        }
+        
+        // Clean up media relay
+        self.media_relay.handle_peer_disconnect(peer_id, room_id).await?;
+        
+        // Broadcast updated peer list to remaining clients
+        self.broadcast_peer_list(room_id, Some(peer_id)).await?;
+        
+        Ok(())
+    }
+
+    async fn broadcast_peer_list(&self, room_id: &str, exclude_peer: Option<&str>) -> Result<()> {
+        let peers = {
+            let rooms = self.rooms.read().await;
+            if let Some(room) = rooms.get(room_id) {
+                room.peers.iter()
+                    .map(|(id, _)| id.clone())
+                    .filter(|id| Some(id.as_str()) != exclude_peer)
+                    .collect::<Vec<String>>()
+            } else {
+                return Ok(());
+            }
+        };
+
+        let peer_list_msg = SignalingMessage::PeerList {
+            peers,
+            room_id: room_id.to_string(),
+        };
+
+        self.broadcast_to_room(room_id, &peer_list_msg, exclude_peer).await?;
+        Ok(())
     }
 }
 

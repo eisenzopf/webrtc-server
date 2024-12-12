@@ -15,7 +15,7 @@ use webrtc::stats::StatsReportType;
 use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
 use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
-use crate::signaling::SignalingMessage;
+use crate::types::SignalingMessage;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use webrtc::data_channel::RTCDataChannel;
