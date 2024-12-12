@@ -234,6 +234,8 @@ async function handleCallResponseMessage(message) {
 async function handleOfferMessage(message) {
     console.log("Received offer from:", message.from_peer);
     try {
+        remotePeerId = message.from_peer;
+        
         // Get media stream first
         const constraints = {
             audio: {
@@ -241,11 +243,7 @@ async function handleOfferMessage(message) {
                 noiseSuppression: true,
                 autoGainControl: true
             },
-            video: enableVideo ? {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                frameRate: { ideal: 30 }
-            } : false
+            video: enableVideo
         };
 
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -381,15 +379,18 @@ async function handleIceCandidateMessage(message) {
         const candidateData = JSON.parse(message.candidate);
         const candidate = new RTCIceCandidate({
             candidate: `candidate:${candidateData.foundation} ${candidateData.component} ${candidateData.protocol} ${candidateData.priority} ${candidateData.address} ${candidateData.port} typ ${candidateData.typ}${candidateData.related_address ? ` raddr ${candidateData.related_address} rport ${candidateData.related_port}` : ''}`,
-            sdpMid: '0',  // Default to first media section
+            sdpMid: '0',
             sdpMLineIndex: 0,
-            usernameFragment: undefined
+            usernameFragment: candidateData.usernameFragment || undefined
         });
         
         // If remote description isn't set yet, queue the candidate
         if (!peerConnection.remoteDescription) {
             console.log('Queueing ICE candidate until remote description is set');
-            iceCandidateQueue.push(candidate);
+            iceCandidateQueue.push({
+                candidate,
+                from_peer: message.from_peer
+            });
             return;
         }
         

@@ -422,15 +422,18 @@ async function setupPeerConnection() {
         // Add more detailed ICE candidate logging
         peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
-                console.log('New ICE candidate:', {
-                    type: event.candidate.type,
-                    protocol: event.candidate.protocol,
-                    address: event.candidate.address,
-                    port: event.candidate.port,
-                    relatedAddress: event.candidate.relatedAddress,
-                    relatedPort: event.candidate.relatedPort
+                console.log('ICE candidate:', event.candidate);
+                sendSignal('IceCandidate', {
+                    room_id: document.getElementById('roomId').value,
+                    candidate: {
+                        candidate: event.candidate.candidate,
+                        sdpMid: event.candidate.sdpMid,
+                        sdpMLineIndex: event.candidate.sdpMLineIndex,
+                        usernameFragment: event.candidate.usernameFragment
+                    },
+                    from_peer: document.getElementById('peerId').value,
+                    to_peer: remotePeerId
                 });
-                handleIceCandidate(event);
             }
         };
 
