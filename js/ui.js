@@ -35,7 +35,7 @@ function updateCallStatus(state, peer = null) {
     }
 }
 
-function handlePeerListMessage(message) {
+export function handlePeerListMessage(message) {
     console.log("Handling peer list update:", message);
     const currentPeerId = document.getElementById('peerId').value;
     const otherPeers = message.peers.filter(p => p !== currentPeerId);

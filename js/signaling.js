@@ -9,7 +9,7 @@ import {
     enableVideo
 } from './webrtc.js';
 
-import { updateStatus } from './ui.js';
+import { updateStatus, handlePeerListMessage } from './ui.js';
 
 let ws;
 let isDisconnecting = false;
