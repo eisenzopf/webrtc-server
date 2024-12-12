@@ -16,7 +16,7 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let iceCandidateQueue = [];
 
-async function connect() {
+export async function connect() {
     try {
         if (ws && ws.readyState === WebSocket.OPEN) {
             console.log('WebSocket already connected');

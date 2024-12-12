@@ -171,3 +171,18 @@ function createAudioMeter() {
         }
     };
 } 
+
+async function checkMediaDevices() {
+    try {
+        const mediaControls = document.getElementById('mediaControls');
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            mediaControls.style.display = 'block';
+            console.log('Media devices available');
+        } else {
+            console.error('Media devices not available');
+            mediaControls.style.display = 'none';
+        }
+    } catch (err) {
+        console.error('Error checking media devices:', err);
+    }
+} 
