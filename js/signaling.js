@@ -9,6 +9,8 @@ import {
     enableVideo
 } from './webrtc.js';
 
+import { updateStatus } from './ui.js';
+
 let ws;
 let isDisconnecting = false;
 let activeCallRequests = new Set();

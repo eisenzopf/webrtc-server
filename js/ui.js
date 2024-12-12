@@ -1,16 +1,25 @@
-function updateStatus(message, isError = false) {
-    console.log(`Status update (${new Date().toISOString()}):`, {
-        message,
-        isError,
+export function updateStatus(message, isError = false, peerConnection = null) {
+    const statusElement = document.getElementById('connectionStatus');
+    if (statusElement) {
+        statusElement.textContent = message;
+        statusElement.className = isError ? 'status error' : 'status';
+    }
+    
+    // Add connection state information if available
+    if (peerConnection) {
+        message += ` (ICE: ${peerConnection.iceConnectionState}, Connection: ${peerConnection.connectionState})`;
+    }
+    
+    console.log('Status update:', {
+        message, 
+        isError, 
         peerConnection: peerConnection ? {
             iceConnectionState: peerConnection.iceConnectionState,
             connectionState: peerConnection.connectionState,
-            signalingState: peerConnection.signalingState
+            signalingState: peerConnection.signalingState,
+            iceGatheringState: peerConnection.iceGatheringState
         } : null
     });
-    const status = document.getElementById('connectionStatus');
-    status.textContent = message;
-    status.className = isError ? 'status error' : 'status success';
 }
 
 function updateCallStatus(state, peer = null) {
