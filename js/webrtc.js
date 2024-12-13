@@ -193,8 +193,15 @@ export async function startCall() {
             return;
         }
 
-        // Set the remote peer ID to the first selected peer
+        // Set the remote peer ID first, before any connection setup
         setRemotePeerId(selectedPeers[0]);
+
+        // Send CallRequest to initiate server-relayed call
+        sendSignal('CallRequest', {
+            room_id: document.getElementById('roomId').value,
+            from_peer: document.getElementById('peerId').value,
+            to_peers: selectedPeers
+        });
 
         // Clean up any existing peer connection
         if (peerConnection) {
@@ -246,13 +253,6 @@ export async function startCall() {
             } else {
                 peerConnection.addTrack(track, localStream);
             }
-        });
-
-        // Send CallRequest to initiate server-relayed call
-        sendSignal('CallRequest', {
-            room_id: document.getElementById('roomId').value,
-            from_peer: document.getElementById('peerId').value,
-            to_peers: selectedPeers
         });
 
         updateStatus('Initiating server-relayed call...');
