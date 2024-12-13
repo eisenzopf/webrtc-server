@@ -193,34 +193,11 @@ export async function startCall() {
             return;
         }
 
-        // Set the remote peer ID first, before any connection setup
+        // Set the remote peer ID first
         setRemotePeerId(selectedPeers[0]);
 
-        // Send CallRequest to initiate server-relayed call
-        sendSignal('CallRequest', {
-            room_id: document.getElementById('roomId').value,
-            from_peer: document.getElementById('peerId').value,
-            to_peers: selectedPeers
-        });
-
-        // Clean up any existing peer connection
-        if (peerConnection) {
-            const senders = peerConnection.getSenders();
-            const promises = senders.map(sender => 
-                peerConnection.removeTrack(sender)
-            );
-            await Promise.all(promises);
-            peerConnection.close();
-            peerConnection = null;
-        }
-
-        // Clean up any existing local stream
-        if (localStream) {
-            localStream.getTracks().forEach(track => {
-                track.stop();
-            });
-            localStream = null;
-        }
+        // Clean up any existing connections
+        await cleanupExistingConnection();
 
         // Get media stream first
         const constraints = {
@@ -242,33 +219,46 @@ export async function startCall() {
         // Setup new peer connection
         await setupPeerConnection();
         
-        // Add tracks to the new peer connection
+        // Add tracks to the peer connection
         localStream.getTracks().forEach(track => {
             console.log('Adding track to peer connection:', track.kind);
-            const existingSender = peerConnection.getSenders().find(s => 
-                s.track && s.track.kind === track.kind
-            );
-            if (existingSender) {
-                existingSender.replaceTrack(track);
-            } else {
-                peerConnection.addTrack(track, localStream);
-            }
+            peerConnection.addTrack(track, localStream);
+        });
+
+        // Wait a brief moment for the peer connection to initialize
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Now send CallRequest to initiate server-relayed call
+        sendSignal('CallRequest', {
+            room_id: document.getElementById('roomId').value,
+            from_peer: document.getElementById('peerId').value,
+            to_peers: selectedPeers
         });
 
         updateStatus('Initiating server-relayed call...');
     } catch (err) {
         console.error('Error starting call:', err);
         updateStatus('Failed to start call: ' + err.message, true);
-        
-        // Clean up on error
-        if (localStream) {
-            localStream.getTracks().forEach(track => track.stop());
-            localStream = null;
-        }
-        if (peerConnection) {
-            peerConnection.close();
-            peerConnection = null;
-        }
+        await cleanupExistingConnection();
+    }
+}
+
+async function cleanupExistingConnection() {
+    if (peerConnection) {
+        const senders = peerConnection.getSenders();
+        const promises = senders.map(sender => 
+            peerConnection.removeTrack(sender)
+        );
+        await Promise.all(promises);
+        peerConnection.close();
+        peerConnection = null;
+    }
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            track.stop();
+        });
+        localStream = null;
     }
 }
 
