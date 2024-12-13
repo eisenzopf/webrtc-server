@@ -104,14 +104,6 @@ export async function setupPeerConnection() {
         console.log('ICE connection state:', peerConnection.iceConnectionState);
     };
     
-    // Add local stream tracks to the connection
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            console.log('Adding track to peer connection:', track.kind);
-            peerConnection.addTrack(track, localStream);
-        });
-    }
-    
     return peerConnection;
 }
 
@@ -225,11 +217,12 @@ export async function startCall() {
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
 
-        // Send call request with offer
+        // Send call request with offer and SDP
         sendSignal('CallRequest', {
             room_id: document.getElementById('roomId').value,
             from_peer: document.getElementById('peerId').value,
-            to_peers: selectedPeers
+            to_peers: selectedPeers,
+            sdp: offer.sdp
         });
 
         updateStatus('Initiating server-relayed call...');
