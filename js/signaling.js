@@ -262,36 +262,22 @@ async function handleOfferMessage(message) {
     console.log("Received offer from:", message.from_peer);
     setRemotePeerId(message.from_peer);
     
-    // Get connection type from UI
-    const connectionTypeSelect = document.getElementById('connectionType');
-    console.log('Using connection type:', connectionTypeSelect);
-    
-    const constraints = {
-        audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-        },
-        video: enableVideo
-    };
-
     try {
-        // 1. Setup peer connection first if needed
+        // 1. Setup peer connection first
         if (!peerConnection) {
-            console.log("Using connection type:", connectionType);
             await setupPeerConnection();
-            // Note: ICE candidate handling is now managed in webrtc.js
         }
 
-        // 2. Set the remote description (offer) before media handling
-        console.log("Setting remote description (offer)");
-        await peerConnection.setRemoteDescription(new RTCSessionDescription({
-            type: 'offer',
-            sdp: message.sdp
-        }));
-        isRemoteDescriptionSet = true;
+        // 2. Get local media stream before setting remote description
+        const constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
+        };
 
-        // 3. Get and add local media stream
         try {
             console.log('Requesting media with constraints:', constraints);
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -307,8 +293,29 @@ async function handleOfferMessage(message) {
             updateStatus('Failed to get local media: ' + err.message, true);
             return;
         }
-        
-        // 4. Process any buffered candidates
+
+        // 3. Set the remote description (offer)
+        console.log("Setting remote description (offer)");
+        await peerConnection.setRemoteDescription(new RTCSessionDescription({
+            type: 'offer',
+            sdp: message.sdp
+        }));
+        isRemoteDescriptionSet = true;
+
+        // 4. Create and set local description (answer)
+        console.log("Creating answer");
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        // 5. Send answer immediately
+        sendSignal('Answer', {
+            room_id: document.getElementById('roomId').value,
+            sdp: answer.sdp,
+            from_peer: document.getElementById('peerId').value,
+            to_peer: message.from_peer
+        });
+
+        // 6. Process any buffered candidates after both descriptions are set
         console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
         while (iceCandidateBuffer.length > 0) {
             const candidate = iceCandidateBuffer.shift();
@@ -319,37 +326,6 @@ async function handleOfferMessage(message) {
                 console.warn('Error adding buffered candidate:', err);
             }
         }
-
-        // 5. Create answer
-        console.log("Creating answer");
-        const answer = await peerConnection.createAnswer();
-        
-        // 6. Set local description (answer)
-        console.log("Setting local description (answer)");
-        await peerConnection.setLocalDescription(answer);
-
-        // 7. Wait for ICE gathering to complete
-        if (peerConnection.iceGatheringState !== 'complete') {
-            console.log('Waiting for ICE gathering to complete...');
-            await new Promise(resolve => {
-                const checkState = () => {
-                    if (peerConnection.iceGatheringState === 'complete') {
-                        peerConnection.removeEventListener('icegatheringstatechange', checkState);
-                        resolve();
-                    }
-                };
-                peerConnection.addEventListener('icegatheringstatechange', checkState);
-            });
-        }
-
-        console.log('ICE gathering complete, sending answer');
-        // 8. Send answer back to peer
-        sendSignal('Answer', {
-            room_id: document.getElementById('roomId').value,
-            sdp: answer.sdp,
-            from_peer: document.getElementById('peerId').value,
-            to_peer: message.from_peer
-        });
 
     } catch (err) {
         console.error('Error handling offer:', err);
