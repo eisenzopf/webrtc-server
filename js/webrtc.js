@@ -115,39 +115,6 @@ export async function setupPeerConnection() {
     return peerConnection;
 }
 
-function handleIceCandidate(event) {
-    if (event.candidate) {
-        const candidate = event.candidate;
-        
-        // Log detailed candidate information
-        console.log('ICE candidate:', {
-            type: candidate.type,
-            protocol: candidate.protocol,
-            address: candidate.address,
-            port: candidate.port,
-            priority: candidate.priority,
-            foundation: candidate.foundation,
-            component: candidate.component,
-            relatedAddress: candidate.relatedAddress,
-            relatedPort: candidate.relatedPort,
-            tcpType: candidate.tcpType,
-            usernameFragment: candidate.usernameFragment
-        });
-
-        sendSignal('IceCandidate', {
-            room_id: document.getElementById('roomId').value,
-            candidate: {
-                candidate: candidate.candidate,
-                sdpMid: candidate.sdpMid,
-                sdpMLineIndex: candidate.sdpMLineIndex,
-                usernameFragment: candidate.usernameFragment
-            },
-            from_peer: document.getElementById('peerId').value,
-            to_peer: remotePeerId
-        });
-    }
-}
-
 function handleIceConnectionStateChange() {
     const states = {
         iceConnectionState: peerConnection.iceConnectionState,
@@ -225,6 +192,9 @@ export async function startCall() {
             updateStatus('Please select at least one peer to call', true);
             return;
         }
+
+        // Set the remote peer ID to the first selected peer
+        setRemotePeerId(selectedPeers[0]);
 
         // Clean up any existing peer connection
         if (peerConnection) {
