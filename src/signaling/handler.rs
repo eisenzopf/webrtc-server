@@ -173,15 +173,25 @@ impl MessageHandler {
         let caller_relay = self.get_peer_relay(&from_peer).await?
             .ok_or_else(|| Error::Peer(format!("Caller {} not found", from_peer)))?;
 
+        // Wait for ICE gathering to complete before creating and sending the offer
+        let mut gathering_complete = caller_relay.peer_connection.gathering_complete_promise().await;
+
         // Create offer on the caller's relay
         let offer = caller_relay.peer_connection.create_offer(None).await?;
         caller_relay.peer_connection.set_local_description(offer.clone()).await?;
+
+        // Wait for ICE gathering to complete
+        let _ = gathering_complete.recv().await;
+
+        // Get the complete local description with ICE candidates
+        let local_desc = caller_relay.peer_connection.local_description().await
+            .ok_or_else(|| Error::Peer("No local description available".to_string()))?;
 
         // Send offer to each target peer
         for peer_id in to_peers {
             let offer_msg = SignalingMessage::Offer {
                 room_id: room_id.clone(),
-                sdp: offer.sdp.clone(),
+                sdp: local_desc.sdp.clone(),
                 from_peer: from_peer.clone(),
                 to_peer: peer_id.clone(),
             };

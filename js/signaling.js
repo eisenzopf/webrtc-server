@@ -434,23 +434,27 @@ async function handleAnswerMessage(message) {
 }
 
 async function handleIceCandidateMessage(message) {
-    if (!peerConnection) {
-        console.warn('No peer connection available for ICE candidate');
-        return;
-    }
-
     try {
         const candidateInit = JSON.parse(message.candidate);
-        if (!peerConnection.remoteDescription) {
-            // Buffer the candidate if remote description isn't set yet
+        
+        // If we don't have a peer connection yet, buffer the candidate
+        if (!peerConnection) {
             iceCandidateBuffer.push(candidateInit);
-            console.log('Buffering ICE candidate until remote description is set');
+            console.log('No peer connection yet, buffering ICE candidate');
             return;
         }
 
+        // If remote description isn't set, buffer the candidate
+        if (!peerConnection.remoteDescription) {
+            iceCandidateBuffer.push(candidateInit);
+            console.log('Remote description not set, buffering ICE candidate');
+            return;
+        }
+
+        // Add the candidate if we have both peer connection and remote description
         await peerConnection.addIceCandidate(candidateInit);
         console.log('Successfully added ICE candidate');
     } catch (err) {
-        console.error('Error adding ICE candidate:', err);
+        console.error('Error handling ICE candidate:', err);
     }
 }
