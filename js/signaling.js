@@ -260,52 +260,49 @@ async function handleCallResponseMessage(message) {
 
 async function handleOfferMessage(message) {
     console.log("Received offer from:", message.from_peer);
-    
-    // Store remote peer ID
     setRemotePeerId(message.from_peer);
     
-    // Setup new peer connection if needed
-    if (!peerConnection) {
-        const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: enableVideo
-        };
+    // Get connection type from UI
+    const connectionTypeSelect = document.getElementById('connectionType');
+    console.log('Using connection type:', connectionTypeSelect);
+    
+    const constraints = {
+        audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+        },
+        video: enableVideo
+    };
 
-        console.log("Using connection type:", connectionType);
-        await setupPeerConnection();
-        
-        // Set up ICE candidate handling
-        peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-                sendSignal('IceCandidate', {
-                    room_id: document.getElementById('roomId').value,
-                    candidate: JSON.stringify(event.candidate),
-                    from_peer: document.getElementById('peerId').value,
-                    to_peer: message.from_peer
-                });
-            }
-        };
+    try {
+        // 1. Setup peer connection first if needed
+        if (!peerConnection) {
+            console.log("Using connection type:", connectionType);
+            await setupPeerConnection();
+            
+            // Set up ICE candidate handling
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    sendSignal('IceCandidate', {
+                        room_id: document.getElementById('roomId').value,
+                        candidate: JSON.stringify(event.candidate),
+                        from_peer: document.getElementById('peerId').value,
+                        to_peer: message.from_peer
+                    });
+                }
+            };
+        }
 
-        // Handle negotiation needed
-        peerConnection.onnegotiationneeded = async () => {
-            try {
-                await peerConnection.setLocalDescription(await peerConnection.createOffer());
-                sendSignal('Offer', {
-                    room_id: document.getElementById('roomId').value,
-                    sdp: peerConnection.localDescription.sdp,
-                    from_peer: document.getElementById('peerId').value,
-                    to_peer: message.from_peer
-                });
-            } catch (err) {
-                console.error('Error during negotiation:', err);
-            }
-        };
-        
-        // Get local media stream
+        // 2. Set the remote description (offer) before media handling
+        console.log("Setting remote description (offer)");
+        await peerConnection.setRemoteDescription(new RTCSessionDescription({
+            type: 'offer',
+            sdp: message.sdp
+        }));
+        isRemoteDescriptionSet = true;
+
+        // 3. Get and add local media stream
         try {
             console.log('Requesting media with constraints:', constraints);
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -321,18 +318,8 @@ async function handleOfferMessage(message) {
             updateStatus('Failed to get local media: ' + err.message, true);
             return;
         }
-    }
-
-    try {
-        // Set the remote description (offer)
-        console.log("Setting remote description (offer)");
-        await peerConnection.setRemoteDescription(new RTCSessionDescription({
-            type: 'offer',
-            sdp: message.sdp
-        }));
-        isRemoteDescriptionSet = true;
         
-        // Process any buffered candidates
+        // 4. Process any buffered candidates
         console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
         while (iceCandidateBuffer.length > 0) {
             const candidate = iceCandidateBuffer.shift();
@@ -344,15 +331,15 @@ async function handleOfferMessage(message) {
             }
         }
 
-        // Create answer
+        // 5. Create answer
         console.log("Creating answer");
         const answer = await peerConnection.createAnswer();
         
-        // Set local description (answer)
+        // 6. Set local description (answer)
         console.log("Setting local description (answer)");
         await peerConnection.setLocalDescription(answer);
 
-        // Wait for ICE gathering to complete
+        // 7. Wait for ICE gathering to complete
         if (peerConnection.iceGatheringState !== 'complete') {
             console.log('Waiting for ICE gathering to complete...');
             await new Promise(resolve => {
@@ -367,7 +354,7 @@ async function handleOfferMessage(message) {
         }
 
         console.log('ICE gathering complete, sending answer');
-        // Send answer back to peer
+        // 8. Send answer back to peer
         sendSignal('Answer', {
             room_id: document.getElementById('roomId').value,
             sdp: answer.sdp,
