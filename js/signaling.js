@@ -280,18 +280,7 @@ async function handleOfferMessage(message) {
         if (!peerConnection) {
             console.log("Using connection type:", connectionType);
             await setupPeerConnection();
-            
-            // Set up ICE candidate handling
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    sendSignal('IceCandidate', {
-                        room_id: document.getElementById('roomId').value,
-                        candidate: JSON.stringify(event.candidate),
-                        from_peer: document.getElementById('peerId').value,
-                        to_peer: message.from_peer
-                    });
-                }
-            };
+            // Note: ICE candidate handling is now managed in webrtc.js
         }
 
         // 2. Set the remote description (offer) before media handling
