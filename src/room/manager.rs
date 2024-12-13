@@ -6,15 +6,36 @@ use tokio::sync::RwLock;
 use crate::signaling::PeerConnection;
 use crate::media::MediaRelay;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 
 pub struct RoomManager {
     rooms: Arc<RwLock<HashMap<String, Room>>>,
+    stun_server: String,
+    stun_port: u16,
+    turn_server: String,
+    turn_port: u16,
+    turn_username: String,
+    turn_password: String,
 }
 
 impl RoomManager {
-    pub fn new() -> Self {
+    pub fn new(
+        stun_server: String,
+        stun_port: u16,
+        turn_server: String,
+        turn_port: u16,
+        turn_username: String,
+        turn_password: String,
+    ) -> Self {
         Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
+            stun_server,
+            stun_port,
+            turn_server,
+            turn_port,
+            turn_username,
+            turn_password,
         }
     }
 
@@ -74,10 +95,17 @@ impl RoomManager {
         let config = webrtc::peer_connection::configuration::RTCConfiguration {
             ice_servers: vec![
                 webrtc::ice_transport::ice_server::RTCIceServer {
-                    urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+                    urls: vec![
+                        format!("stun:{}:{}", self.stun_server, self.stun_port),
+                        format!("turn:{}:{}", self.turn_server, self.turn_port)
+                    ],
+                    username: self.turn_username.clone(),
+                    credential: self.turn_password.clone(),
+                    credential_type: RTCIceCredentialType::Password,
                     ..Default::default()
                 },
             ],
+            ice_transport_policy: RTCIceTransportPolicy::All,
             ..Default::default()
         };
 

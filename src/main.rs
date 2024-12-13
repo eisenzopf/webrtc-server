@@ -12,6 +12,7 @@ use webrtc_server::signaling::handler::MessageHandler;
 use webrtc_server::signaling::server::run_debug_server;
 use log::{info, warn, error};
 use webrtc_server::signaling::turn::TurnServer;
+use webrtc_server::room::manager::RoomManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {

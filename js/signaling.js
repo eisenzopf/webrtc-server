@@ -22,6 +22,8 @@ let activeCallRequests = new Set();
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let iceCandidateQueue = [];
+let iceCandidateBuffer = [];
+let isNegotiating = false;
 
 export async function connect() {
     try {
@@ -324,6 +326,19 @@ async function handleOfferMessage(message) {
                 }
             }
         }
+
+        isNegotiating = false;
+        if (iceCandidateBuffer.length > 0) {
+            console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
+            for (const candidate of iceCandidateBuffer) {
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                } catch (err) {
+                    console.error('Error adding buffered ICE candidate:', err);
+                }
+            }
+            iceCandidateBuffer = [];
+        }
     } catch (err) {
         console.error("Error handling offer:", err);
     }
@@ -383,6 +398,19 @@ async function handleAnswerMessage(message) {
                 }
             }
         }
+
+        isNegotiating = false;
+        if (iceCandidateBuffer.length > 0) {
+            console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
+            for (const candidate of iceCandidateBuffer) {
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                } catch (err) {
+                    console.error('Error adding buffered ICE candidate:', err);
+                }
+            }
+            iceCandidateBuffer = [];
+        }
     } catch (err) {
         console.error("Error handling answer:", err);
         console.error("Error details:", err.message);
@@ -395,6 +423,7 @@ async function handleAnswerMessage(message) {
 async function handleIceCandidateMessage(message) {
     if (!peerConnection) {
         console.warn('Received ICE candidate but no peer connection exists');
+        iceCandidateBuffer.push(message);
         return;
     }
     
@@ -408,21 +437,15 @@ async function handleIceCandidateMessage(message) {
             sdpMLineIndex: candidateData.sdpMLineIndex || 0,
             usernameFragment: candidateData.usernameFragment
         });
-        
-        // If remote description isn't set yet, queue the candidate
-        if (!peerConnection.remoteDescription) {
-            console.log('Queueing ICE candidate until remote description is set');
-            iceCandidateQueue.push({
-                candidate,
-                from_peer: message.from_peer
-            });
-            return;
+
+        if (!peerConnection.remoteDescription || isNegotiating) {
+            console.log('Buffering ICE candidate');
+            iceCandidateBuffer.push(candidate);
+        } else {
+            console.log('Adding ICE candidate:', candidate);
+            await peerConnection.addIceCandidate(candidate);
         }
-        
-        console.log('Adding ICE candidate:', candidate);
-        await peerConnection.addIceCandidate(candidate);
     } catch (err) {
         console.error('Error handling ICE candidate:', err);
-        console.error('Candidate data:', message.candidate);
     }
 }
