@@ -20,6 +20,7 @@ use bytes::Bytes;
 use tokio::sync::Mutex;
 use webrtc::data_channel::RTCDataChannel;
 use std::fmt;
+use webrtc::ice::network_type::NetworkType;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
@@ -140,6 +141,7 @@ impl MediaRelayManager {
         remote_peer_id: String,
         handler: Arc<impl SignalingHandler + Send + Sync + 'static>
     ) -> Result<MediaRelay> {
+        debug!("Creating new relay for peer {} in room {}", peer_id, room_id);
         let mut ice_servers = vec![];
 
         if let Some(turn_config) = &self.turn_config {
@@ -164,7 +166,8 @@ impl MediaRelayManager {
             bundle_policy: RTCBundlePolicy::MaxBundle,
             rtcp_mux_policy: RTCRtcpMuxPolicy::Require,
             ice_candidate_pool_size: 10,
-            ..Default::default()
+            peer_identity: String::new(),
+            certificates: Vec::new(),
         };
 
         // Create a new PeerConnection

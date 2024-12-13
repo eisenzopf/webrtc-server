@@ -8,28 +8,29 @@ export let localStream;
 export let remotePeerId = null;
 export let enableVideo = false;
 
-export function getIceServers() {
-    const connectionType = document.getElementById('connectionType').value;
+export async function getIceServers() {
     const stunServer = document.getElementById('stunServer').value;
     const stunPort = document.getElementById('stunPort').value;
-    const turnUsername = document.getElementById('turnUsername').value;
-    const turnPassword = document.getElementById('turnPassword').value;
-    
-    const config = {
-        iceServers: [{
-            urls: `stun:${stunServer}:${stunPort}`
-        }]
+    const username = document.getElementById('turnUsername').value;
+    const password = document.getElementById('turnPassword').value;
+    const connectionType = document.getElementById('connectionType').value;
+
+    const iceServers = [{
+        urls: [
+            `stun:${stunServer}:${stunPort}`,
+            `turn:${stunServer}:${stunPort}`
+        ],
+        username: username,
+        credential: password
+    }];
+
+    return {
+        iceServers,
+        iceTransportPolicy: connectionType === 'relay' ? 'relay' : 'all',
+        iceCandidatePoolSize: 10,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require'
     };
-
-    if (connectionType === 'relay') {
-        config.iceServers.push({
-            urls: `turn:${stunServer}:${stunPort}`,
-            username: turnUsername,
-            credential: turnPassword
-        });
-    }
-
-    return config;
 }
 
 export function handleTrack(event) {
@@ -59,7 +60,11 @@ export async function setupPeerConnection() {
     }
 
     const config = await getIceServers();
-    console.log('Using connection type:', config.type);
+    if (!config || !config.iceServers) {
+        throw new Error('Failed to get ICE server configuration');
+    }
+    
+    console.log('Using connection type:', config.type || 'default');
     peerConnection = new RTCPeerConnection(config.iceServers);
     
     // Add event handlers
