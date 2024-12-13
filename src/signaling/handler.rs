@@ -139,9 +139,23 @@ impl MessageHandler {
     async fn handle_ice_candidate(&self, room_id: &str, from_peer: &str, to_peer: &str, candidate: &RTCIceCandidateInit) -> Result<()> {
         let rooms = self.rooms.read().await;
         if let Some(room) = rooms.get(room_id) {
+            // First, relay the ICE candidate message to the other peer
+            let ice_msg = SignalingMessage::IceCandidate {
+                room_id: room_id.to_string(),
+                candidate: serde_json::to_string(candidate)?,
+                from_peer: from_peer.to_string(),
+                to_peer: to_peer.to_string(),
+            };
+            self.send_to_peer(to_peer, &ice_msg).await?;
+
+            // Then, only add it to the peer connection if remote description is set
             if let Some(relay) = room.get_peer_relay(to_peer) {
-                // Add ICE candidate to the relay's peer connection
-                relay.peer_connection.add_ice_candidate(candidate.clone()).await?;
+                if relay.peer_connection.remote_description().await.is_some() {
+                    relay.peer_connection.add_ice_candidate(candidate.clone()).await?;
+                } else {
+                    // Log that we're skipping this candidate due to no remote description
+                    info!("Skipping ICE candidate for peer {} - remote description not yet set", to_peer);
+                }
             }
         }
         Ok(())
