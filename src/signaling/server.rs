@@ -86,17 +86,18 @@ impl SignalingServer {
                             
                             if let Err(e) = handler.handle_message(signal_msg).await {
                                 error!("Error handling message: {}", e);
+                                // Don't break on message handling errors unless it's a critical failure
+                                if e.to_string().contains("closed connection") {
+                                    break;
+                                }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    error!("WebSocket error for peer {}: {}", peer_addr, e);
-                    // Handle disconnection with the correct peer_id and room_id
-                    if let (Some(peer_id), Some(room_id)) = (&current_peer_id, &current_room_id) {
-                        if let Err(e) = handler.handle_peer_disconnect(peer_id, room_id).await {
-                            error!("Error handling peer disconnect: {}", e);
-                        }
+                    // Log the error but don't propagate WebSocket closure errors
+                    if !e.to_string().contains("closed connection") {
+                        error!("WebSocket error for peer {}: {}", peer_addr, e);
                     }
                     break;
                 }
@@ -106,9 +107,8 @@ impl SignalingServer {
         // Handle normal closure
         if let (Some(peer_id), Some(room_id)) = (current_peer_id, current_room_id) {
             info!("WebSocket closed for peer {} in room {}", peer_id, room_id);
-            if let Err(e) = handler.handle_peer_disconnect(&peer_id, &room_id).await {
-                error!("Error handling peer disconnect: {}", e);
-            }
+            // Ignore errors during disconnect handling since the connection is already closed
+            let _ = handler.handle_peer_disconnect(&peer_id, &room_id).await;
         }
 
         Ok(())

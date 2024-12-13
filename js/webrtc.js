@@ -1,8 +1,36 @@
+// Add this import at the top of the file
+import { updateStatus } from './ui.js';
+import { sendSignal } from './signaling.js';
+
 // Export shared state and functions
 export let peerConnection;
 export let localStream;
 export let remotePeerId = null;
 export let enableVideo = false;
+
+export function getIceServers() {
+    const connectionType = document.getElementById('connectionType').value;
+    const stunServer = document.getElementById('stunServer').value;
+    const stunPort = document.getElementById('stunPort').value;
+    const turnUsername = document.getElementById('turnUsername').value;
+    const turnPassword = document.getElementById('turnPassword').value;
+    
+    const config = {
+        iceServers: [{
+            urls: `stun:${stunServer}:${stunPort}`
+        }]
+    };
+
+    if (connectionType === 'relay') {
+        config.iceServers.push({
+            urls: `turn:${stunServer}:${stunPort}`,
+            username: turnUsername,
+            credential: turnPassword
+        });
+    }
+
+    return config;
+}
 
 export function handleTrack(event) {
     console.log('Received track from server:', event.track.kind);
@@ -22,57 +50,6 @@ export function handleTrack(event) {
         videoElement.style.display = 'block';
         console.log('Added video track to remote video element');
     }
-}
-
-export async function getIceServers() {
-    const config = await getIceServers();
-    console.log('Using connection type:', config.type);
-    peerConnection = new RTCPeerConnection(config.iceServers);
-    
-    // Add event handlers
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-            console.log('ICE candidate:', event.candidate);
-            // Make sure remotePeerId is set when creating the peer connection
-            if (!remotePeerId) {
-                console.warn('No remote peer ID set for ICE candidate');
-                return;
-            }
-            sendSignal('IceCandidate', {
-                room_id: document.getElementById('roomId').value,
-                candidate: JSON.stringify({
-                    foundation: event.candidate.foundation,
-                    component: event.candidate.component,
-                    protocol: event.candidate.protocol,
-                    priority: event.candidate.priority,
-                    address: event.candidate.address,
-                    port: event.candidate.port,
-                    typ: event.candidate.type,
-                    related_address: event.candidate.relatedAddress,
-                    related_port: event.candidate.relatedPort,
-                    usernameFragment: event.candidate.usernameFragment,
-                    sdpMid: event.candidate.sdpMid,
-                    sdpMLineIndex: event.candidate.sdpMLineIndex
-                }),
-                from_peer: document.getElementById('peerId').value,
-                to_peer: remotePeerId
-            });
-        }
-    };
-    peerConnection.ontrack = handleTrack;
-    peerConnection.oniceconnectionstatechange = () => {
-        console.log('ICE connection state:', peerConnection.iceConnectionState);
-    };
-    
-    // Add local stream tracks to the connection
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            console.log('Adding track to peer connection:', track.kind);
-            peerConnection.addTrack(track, localStream);
-        });
-    }
-    
-    return peerConnection;
 }
 
 export async function setupPeerConnection() {
@@ -232,7 +209,7 @@ function handleConnectionStateChange() {
     });
 }
 
-async function startCall() {
+export async function startCall() {
     try {
         const selectedPeers = Array.from(document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked'))
             .map(cb => cb.value);
@@ -506,4 +483,24 @@ function debugIceFailure() {
 
         console.log('ICE Candidates Debug:', iceCandidates);
     });
+}
+
+export function resetPeerConnection() {
+    peerConnection = null;
+}
+
+export function resetLocalStream() {
+    localStream = null;
+}
+
+export function resetRemotePeerId() {
+    remotePeerId = null;
+}
+
+export function setRemotePeerId(peerId) {
+    remotePeerId = peerId;
+}
+
+export function setLocalStream(stream) {
+    localStream = stream;
 }

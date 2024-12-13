@@ -102,6 +102,14 @@
         import { connect } from './js/signaling.js';
         window.handleConnect = connect;
     </script>
+    <script type="module">
+        import { startCall } from './js/webrtc.js';
+        window.startCall = startCall;
+    </script>
+    <script type="module">
+        import { disconnect } from './js/signaling.js';
+        window.disconnect = disconnect;
+    </script>
     <script>
         window.addEventListener('load', async () => {
             await checkMediaDevices();

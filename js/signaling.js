@@ -6,7 +6,12 @@ import {
     setupPeerConnection,
     handleTrack,
     getIceServers,
-    enableVideo
+    enableVideo,
+    resetPeerConnection,
+    resetLocalStream,
+    resetRemotePeerId,
+    setRemotePeerId,
+    setLocalStream
 } from './webrtc.js';
 
 import { updateStatus, handlePeerListMessage } from './ui.js';
@@ -130,7 +135,7 @@ async function handleWebSocketMessage(event) {
                         // First check/request permissions
                         await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                         
-                        remotePeerId = message.from_peer;
+                        setRemotePeerId(message.from_peer);
                         updateStatus(`Incoming call from ${remotePeerId}`);
                         
                         // Only send acceptance after permissions granted
@@ -178,7 +183,7 @@ function handleWebSocketClose(event) {
     }
 }
 
-function sendSignal(messageType, data = {}) {
+export function sendSignal(messageType, data = {}) {
     if (ws && ws.readyState === WebSocket.OPEN) {
         const message = {
             message_type: messageType,
@@ -196,7 +201,7 @@ function sendSignal(messageType, data = {}) {
     }
 }
 
-function disconnect() {
+export function disconnect() {
     try {
         isDisconnecting = true;
         cleanupConnection();
@@ -210,12 +215,10 @@ function disconnect() {
 function cleanupConnection() {
     if (peerConnection) {
         peerConnection.close();
-        peerConnection = null;
     }
 
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
     }
 
     // Remove remote audio element if it exists
@@ -225,13 +228,16 @@ function cleanupConnection() {
         remoteAudio.remove();
     }
 
-    remotePeerId = null;
+    // Use the reset functions instead of direct assignment
+    resetPeerConnection();
+    resetLocalStream();
+    resetRemotePeerId();
     document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
 }
 
 async function handleCallResponseMessage(message) {
     if (message.accepted) {
-        remotePeerId = message.from_peer;
+        setRemotePeerId(message.from_peer);
         updateStatus(`Call accepted by ${remotePeerId}`);
         try {
             await setupPeerConnection();
@@ -247,7 +253,7 @@ async function handleCallResponseMessage(message) {
 async function handleOfferMessage(message) {
     console.log("Received offer from:", message.from_peer);
     try {
-        remotePeerId = message.from_peer;
+        setRemotePeerId(message.from_peer);
         
         // Get media stream first
         const constraints = {
@@ -259,7 +265,8 @@ async function handleOfferMessage(message) {
             video: enableVideo
         };
 
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        setLocalStream(stream);
         
         // Now set up peer connection
         if (!peerConnection) {
@@ -325,7 +332,7 @@ async function handleOfferMessage(message) {
 async function handleAnswerMessage(message) {
     console.log("Received answer from:", message.from_peer);
     try {
-        remotePeerId = message.from_peer;
+        setRemotePeerId(message.from_peer);
         if (!peerConnection) {
             console.log("No peer connection available for answer");
             return;
