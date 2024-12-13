@@ -206,11 +206,7 @@ export async function startCall() {
                 noiseSuppression: true,
                 autoGainControl: true
             },
-            video: enableVideo ? {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                frameRate: { ideal: 30 }
-            } : false
+            video: false
         };
 
         console.log('Requesting media with constraints:', constraints);
@@ -218,17 +214,18 @@ export async function startCall() {
 
         // Setup new peer connection
         await setupPeerConnection();
-        
-        // Add tracks to the peer connection
+
+        // Add tracks to the peer connection BEFORE creating offer
         localStream.getTracks().forEach(track => {
             console.log('Adding track to peer connection:', track.kind);
             peerConnection.addTrack(track, localStream);
         });
 
-        // Wait a brief moment for the peer connection to initialize
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Create and send offer
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
 
-        // Now send CallRequest to initiate server-relayed call
+        // Send call request with offer
         sendSignal('CallRequest', {
             room_id: document.getElementById('roomId').value,
             from_peer: document.getElementById('peerId').value,
