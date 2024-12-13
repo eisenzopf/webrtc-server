@@ -223,16 +223,28 @@ impl MediaRelayManager {
             
             Box::pin(async move {
                 if let Some(c) = c {
-                    let remote_peer_id_ref = remote_peer_id.clone(); // Clone for the message
-                    // Send the ICE candidate through signaling
+                    // Create a simplified candidate structure that matches the client
+                    let candidate_init = match c.to_json() {
+                        Ok(init) => serde_json::json!({
+                            "candidate": init.candidate,
+                            "sdpMid": init.sdp_mid,
+                            "sdpMLineIndex": init.sdp_mline_index,
+                            "usernameFragment": init.username_fragment
+                        }),
+                        Err(e) => {
+                            error!("Failed to convert ICE candidate to JSON: {}", e);
+                            return;
+                        }
+                    };
+
                     let candidate_msg = SignalingMessage::IceCandidate {
                         room_id,
-                        candidate: serde_json::to_string(&c).unwrap(),
+                        candidate: candidate_init.to_string(),
                         from_peer: peer_id,
                         to_peer: remote_peer_id.clone(),
                     };
                     
-                    if let Err(e) = handler.send_to_peer(&remote_peer_id_ref, &candidate_msg).await {
+                    if let Err(e) = handler.send_to_peer(&remote_peer_id, &candidate_msg).await {
                         error!("Failed to send ICE candidate: {}", e);
                     }
                 }

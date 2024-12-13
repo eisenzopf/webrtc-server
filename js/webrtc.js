@@ -65,33 +65,35 @@ export async function setupPeerConnection() {
     // Add event handlers
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-            console.log('ICE candidate:', event.candidate);
-            // Make sure remotePeerId is set when creating the peer connection
+            console.log('Generated ICE candidate:', event.candidate);
             if (!remotePeerId) {
                 console.warn('No remote peer ID set for ICE candidate');
                 return;
             }
+
+            const candidateInit = {
+                candidate: event.candidate.candidate,
+                sdpMid: event.candidate.sdpMid,
+                sdpMLineIndex: event.candidate.sdpMLineIndex,
+                usernameFragment: event.candidate.usernameFragment
+            };
+
             sendSignal('IceCandidate', {
                 room_id: document.getElementById('roomId').value,
-                candidate: JSON.stringify({
-                    foundation: event.candidate.foundation,
-                    component: event.candidate.component,
-                    protocol: event.candidate.protocol,
-                    priority: event.candidate.priority,
-                    address: event.candidate.address,
-                    port: event.candidate.port,
-                    typ: event.candidate.type,
-                    related_address: event.candidate.relatedAddress,
-                    related_port: event.candidate.relatedPort,
-                    usernameFragment: event.candidate.usernameFragment,
-                    sdpMid: event.candidate.sdpMid,
-                    sdpMLineIndex: event.candidate.sdpMLineIndex
-                }),
+                candidate: JSON.stringify(candidateInit),
                 from_peer: document.getElementById('peerId').value,
                 to_peer: remotePeerId
             });
         }
     };
+
+    peerConnection.onicegatheringstatechange = () => {
+        console.log('ICE gathering state:', peerConnection.iceGatheringState);
+        if (peerConnection.iceGatheringState === 'complete') {
+            console.log('Final ICE candidates:', peerConnection.localDescription.sdp);
+        }
+    };
+
     peerConnection.ontrack = handleTrack;
     peerConnection.oniceconnectionstatechange = () => {
         console.log('ICE connection state:', peerConnection.iceConnectionState);
