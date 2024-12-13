@@ -106,31 +106,15 @@ function handleWebSocketOpen() {
 
 async function handleWebSocketMessage(event) {
     try {
-        if (typeof event.data !== 'string') {
-            console.log("Received non-text message, ignoring");
-            return;
-        }
-
         const message = JSON.parse(event.data);
         console.log("Received message:", message);
-        
+
         switch (message.message_type) {
             case "PeerList":
                 console.log("Received PeerList message:", message);
                 handlePeerListMessage(message);
                 break;
-            case "Offer":
-                await handleOfferMessage(message);
-                break;
-            case "Answer":
-                await handleAnswerMessage(message);
-                break;
-            case "IceCandidate":
-                await handleIceCandidateMessage(message);
-                break;
-            case "EndCall":
-                handleEndCallMessage();
-                break;
+
             case "CallRequest":
                 console.log("Received CallRequest message:", message);
                 if (message.to_peers.includes(document.getElementById('peerId').value)) {
@@ -163,12 +147,46 @@ async function handleWebSocketMessage(event) {
                     }
                 }
                 break;
+
             case "CallResponse":
+                console.log("Received CallResponse message:", message);
                 await handleCallResponseMessage(message);
                 break;
+
+            case "Offer":
+                await handleOfferMessage(message);
+                break;
+
+            case "Answer":
+                await handleAnswerMessage(message);
+                break;
+
+            case "IceCandidate":
+                if (peerConnection) {
+                    try {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate({
+                            candidate: message.candidate.candidate,
+                            sdpMid: message.candidate.sdpMid,
+                            sdpMLineIndex: message.candidate.sdpMLineIndex
+                        }));
+                        console.log('Added ICE candidate');
+                    } catch (err) {
+                        console.error('Error adding ICE candidate:', err);
+                    }
+                } else {
+                    console.warn('Received ICE candidate but no peer connection exists');
+                }
+                break;
+
+            case "EndCall":
+                handleEndCallMessage();
+                break;
+
+            default:
+                console.log("Unhandled message type:", message.message_type);
         }
-    } catch (err) {
-        console.error('Failed to process WebSocket message:', err);
+    } catch (error) {
+        console.error("Error handling WebSocket message:", error);
     }
 }
 
@@ -191,22 +209,19 @@ function handleWebSocketClose(event) {
     cleanupConnection();
 }
 
-export function sendSignal(messageType, data = {}) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        const message = {
-            message_type: messageType,
-            ...data
-        };
-        
-        Object.keys(message).forEach(key => 
-            message[key] === undefined && delete message[key]
-        );
-        
-        console.log("Sending message:", message);
-        ws.send(JSON.stringify(message));
-    } else {
-        console.error("WebSocket is not open");
+export function sendSignal(messageType, data) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error('WebSocket is not connected');
+        return;
     }
+
+    const message = {
+        message_type: messageType,
+        ...data
+    };
+
+    console.log('Sending message:', message);
+    ws.send(JSON.stringify(message));
 }
 
 export function disconnect() {
@@ -249,12 +264,23 @@ async function handleCallResponseMessage(message) {
         updateStatus(`Call accepted by ${remotePeerId}`);
         try {
             await setupPeerConnection();
-            // Rest of the handling...
+            // Create and send offer
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            sendSignal('Offer', {
+                room_id: document.getElementById('roomId').value,
+                from_peer: document.getElementById('peerId').value,
+                to_peer: remotePeerId,
+                sdp: offer.sdp
+            });
         } catch (err) {
             console.error('Error setting up call:', err);
+            updateStatus('Failed to setup call: ' + err.message, true);
         }
     } else {
         updateStatus(`Call rejected by ${message.from_peer}: ${message.reason || 'No reason given'}`, true);
+        await cleanupExistingConnection();
     }
 }
 
@@ -263,59 +289,34 @@ async function handleOfferMessage(message) {
     setRemotePeerId(message.from_peer);
     
     try {
-        // 1. Setup peer connection first
+        // 1. Setup peer connection if not exists
         if (!peerConnection) {
             await setupPeerConnection();
         }
 
-        // 2. Get local media stream before setting remote description
-        const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: false
-        };
-
-        try {
-            console.log('Requesting media with constraints:', constraints);
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            setLocalStream(stream);
-            
-            // Add local stream tracks to the connection
-            stream.getTracks().forEach(track => {
-                console.log('Adding track to peer connection:', track.kind);
-                peerConnection.addTrack(track, stream);
-            });
-        } catch (err) {
-            console.error('Error getting local media:', err);
-            updateStatus('Failed to get local media: ' + err.message, true);
-            return;
-        }
-
-        // 3. Set the remote description (offer)
-        console.log("Setting remote description (offer)");
-        await peerConnection.setRemoteDescription(new RTCSessionDescription({
+        // 2. Set remote description from offer
+        const remoteDesc = new RTCSessionDescription({
             type: 'offer',
             sdp: message.sdp
-        }));
-        isRemoteDescriptionSet = true;
+        });
+        
+        await peerConnection.setRemoteDescription(remoteDesc);
+        console.log("Set remote description from offer");
 
-        // 4. Create and set local description (answer)
-        console.log("Creating answer");
+        // 3. Create and set local description (answer)
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
+        console.log("Created and set local answer");
 
-        // 5. Send answer immediately
+        // 4. Send answer
         sendSignal('Answer', {
-            room_id: document.getElementById('roomId').value,
+            room_id: message.room_id,
             sdp: answer.sdp,
             from_peer: document.getElementById('peerId').value,
             to_peer: message.from_peer
         });
 
-        // 6. Process any buffered candidates after both descriptions are set
+        // 5. Process any buffered candidates
         console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
         while (iceCandidateBuffer.length > 0) {
             const candidate = iceCandidateBuffer.shift();
@@ -335,102 +336,56 @@ async function handleOfferMessage(message) {
 
 async function handleAnswerMessage(message) {
     console.log("Received answer from:", message.from_peer);
+    
     try {
-        setRemotePeerId(message.from_peer);
         if (!peerConnection) {
-            console.log("No peer connection available for answer");
-            return;
+            throw new Error("No peer connection exists");
         }
 
-        if (peerConnection.signalingState === "have-local-offer") {
-            // Create and set the remote description
-            const answerDesc = new RTCSessionDescription({
-                type: 'answer',
-                sdp: message.sdp
-            });
+        const remoteDesc = new RTCSessionDescription({
+            type: 'answer',
+            sdp: message.sdp
+        });
 
-            // Wait for ICE gathering to complete before setting remote description
-            await new Promise((resolve) => {
-                if (peerConnection.iceGatheringState === 'complete') {
-                    resolve();
-                } else {
-                    peerConnection.onicegatheringstatechange = () => {
-                        if (peerConnection.iceGatheringState === 'complete') {
-                            resolve();
-                        }
-                    };
-                }
-            });
+        await peerConnection.setRemoteDescription(remoteDesc);
+        console.log("Set remote description from answer");
 
-            console.log("Setting remote description (answer):", answerDesc);
-            await peerConnection.setRemoteDescription(answerDesc);
-            
-            console.log("Remote description set successfully. Connection state:", {
-                iceConnectionState: peerConnection.iceConnectionState,
-                connectionState: peerConnection.connectionState,
-                signalingState: peerConnection.signalingState,
-                iceGatheringState: peerConnection.iceGatheringState
-            });
-        } else {
-            console.log("Ignoring answer - not in have-local-offer state, current state:", peerConnection.signalingState);
-        }
-
-        if (iceCandidateQueue.length > 0) {
-            console.log(`Processing ${iceCandidateQueue.length} queued ICE candidates`);
-            while (iceCandidateQueue.length) {
-                const {candidate, from_peer} = iceCandidateQueue.shift();
-                try {
-                    console.log('Processing queued ICE candidate:', candidate);
-                    await peerConnection.addIceCandidate(candidate);
-                } catch (err) {
-                    console.error('Error adding queued ICE candidate:', err);
-                }
+        // Process any buffered candidates
+        console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
+        while (iceCandidateBuffer.length > 0) {
+            const candidate = iceCandidateBuffer.shift();
+            try {
+                await peerConnection.addIceCandidate(candidate);
+                console.log('Added buffered ICE candidate');
+            } catch (err) {
+                console.warn('Error adding buffered candidate:', err);
             }
         }
 
-        isNegotiating = false;
-        if (iceCandidateBuffer.length > 0) {
-            console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
-            for (const candidate of iceCandidateBuffer) {
-                try {
-                    await peerConnection.addIceCandidate(candidate);
-                } catch (err) {
-                    console.error('Error adding buffered ICE candidate:', err);
-                }
-            }
-            iceCandidateBuffer = [];
-        }
     } catch (err) {
-        console.error("Error handling answer:", err);
-        console.error("Error details:", err.message);
-        if (err.stack) {
-            console.error("Stack trace:", err.stack);
-        }
+        console.error('Error handling answer:', err);
+        updateStatus('Failed to handle answer: ' + err.message, true);
     }
 }
 
 async function handleIceCandidateMessage(message) {
     try {
-        const candidateInit = JSON.parse(message.candidate);
+        const candidate = JSON.parse(message.candidate);
         
-        // If we don't have a peer connection yet, buffer the candidate
         if (!peerConnection) {
-            iceCandidateBuffer.push(candidateInit);
-            console.log('No peer connection yet, buffering ICE candidate');
-            return;
+            throw new Error("No peer connection exists");
         }
 
-        // If remote description isn't set, buffer the candidate
-        if (!peerConnection.remoteDescription) {
-            iceCandidateBuffer.push(candidateInit);
+        if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+            // Remote description is set, add candidate immediately
+            await peerConnection.addIceCandidate(candidate);
+            console.log('Added ICE candidate');
+        } else {
+            // Buffer the candidate for later
             console.log('Remote description not set, buffering ICE candidate');
-            return;
+            iceCandidateBuffer.push(candidate);
         }
-
-        // Add the candidate if we have both peer connection and remote description
-        await peerConnection.addIceCandidate(candidateInit);
-        console.log('Successfully added ICE candidate');
     } catch (err) {
-        console.error('Error handling ICE candidate:', err);
+        console.warn('Error handling ICE candidate:', err);
     }
 }

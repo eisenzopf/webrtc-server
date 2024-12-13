@@ -54,57 +54,84 @@ export function handleTrack(event) {
 }
 
 export async function setupPeerConnection() {
-    if (peerConnection) {
-        console.log('Peer connection already exists');
-        return;
+    const config = await getIceServers();
+    peerConnection = new RTCPeerConnection(config);
+    
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
+        });
+        
+        setLocalStream(stream);
+        stream.getTracks().forEach(track => {
+            console.log('Adding track to peer connection:', track.kind);
+            peerConnection.addTrack(track, stream);
+        });
+    } catch (err) {
+        console.error('Error getting user media:', err);
+        updateStatus('Failed to access microphone: ' + err.message, true);
+        throw err; // Re-throw to handle in caller
     }
 
-    const config = await getIceServers();
-    if (!config || !config.iceServers) {
-        throw new Error('Failed to get ICE server configuration');
-    }
-    
-    console.log('Using connection type:', config.type || 'default');
-    peerConnection = new RTCPeerConnection(config.iceServers);
-    
-    // Add event handlers
+    // Add ICE candidate handling
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-            console.log('Generated ICE candidate:', event.candidate);
-            if (!remotePeerId) {
-                console.warn('No remote peer ID set for ICE candidate');
-                return;
-            }
-
-            const candidateInit = {
-                candidate: event.candidate.candidate,
-                sdpMid: event.candidate.sdpMid,
-                sdpMLineIndex: event.candidate.sdpMLineIndex,
-                usernameFragment: event.candidate.usernameFragment
-            };
-
             sendSignal('IceCandidate', {
                 room_id: document.getElementById('roomId').value,
-                candidate: JSON.stringify(candidateInit),
                 from_peer: document.getElementById('peerId').value,
-                to_peer: remotePeerId
+                to_peer: remotePeerId,
+                candidate: {
+                    candidate: event.candidate.candidate,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex
+                }
             });
         }
     };
 
-    peerConnection.onicegatheringstatechange = () => {
-        console.log('ICE gathering state:', peerConnection.iceGatheringState);
-        if (peerConnection.iceGatheringState === 'complete') {
-            console.log('Final ICE candidates:', peerConnection.localDescription.sdp);
-        }
-    };
-
-    peerConnection.ontrack = handleTrack;
+    // Log ICE connection state changes
     peerConnection.oniceconnectionstatechange = () => {
         console.log('ICE connection state:', peerConnection.iceConnectionState);
     };
-    
+
     return peerConnection;
+}
+
+function handleTrackEvent(event) {
+    console.log('Received remote track:', event.track.kind);
+    const remoteStream = event.streams[0];
+    
+    if (remoteStream) {
+        const audioElement = document.getElementById('remoteAudio');
+        if (audioElement) {
+            audioElement.srcObject = remoteStream;
+            console.log('Set remote stream to audio element');
+            
+            // Monitor audio levels
+            monitorAudioState(remoteStream);
+        } else {
+            console.warn('No remote audio element found');
+        }
+    } else {
+        console.warn('No remote stream in track event');
+    }
+}
+
+function handleICECandidate(event) {
+    if (event.candidate) {
+        console.log('Generated ICE candidate:', event.candidate);
+        
+        sendSignal('IceCandidate', {
+            room_id: document.getElementById('roomId').value,
+            from_peer: document.getElementById('peerId').value,
+            to_peer: getRemotePeerId()
+        });
+    }
 }
 
 function handleIceConnectionStateChange() {
@@ -191,27 +218,8 @@ export async function startCall() {
         // Clean up any existing connections
         await cleanupExistingConnection();
 
-        // Get media stream first
-        const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: false
-        };
-
-        console.log('Requesting media with constraints:', constraints);
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-
-        // Setup new peer connection
+        // Setup new peer connection (this will also get media stream and add tracks)
         await setupPeerConnection();
-
-        // Add tracks to the peer connection BEFORE creating offer
-        localStream.getTracks().forEach(track => {
-            console.log('Adding track to peer connection:', track.kind);
-            peerConnection.addTrack(track, localStream);
-        });
 
         // Create and send offer
         const offer = await peerConnection.createOffer();

@@ -1,70 +1,81 @@
 use std::error::Error as StdError;
 use std::fmt;
 use std::net::AddrParseError;
+use webrtc::Error as WebRTCError;
+use tokio_tungstenite::tungstenite::Error as WsError;
+use std::io::Error as IoError;
+use turn::Error as TurnError;
+use serde_json::Error as SerdeError;
 
 #[derive(Debug)]
 pub enum Error {
-    WebSocket(tokio_tungstenite::tungstenite::Error),
-    Json(serde_json::Error),
+    WebRTCError(String),
+    WebSocketError(String),
+    ConnectionError(String),
+    SerializationError(String),
+    InvalidMessage(String),
     Room(String),
     Peer(String),
     Media(String),
-    IO(std::io::Error),
-    Turn(turn::Error),
-    AddrParse(AddrParseError),
+    IO(String),
+    Turn(String),
+    AddrParse(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::WebSocket(e) => write!(f, "WebSocket error: {}", e),
-            Error::Json(e) => write!(f, "JSON error: {}", e),
-            Error::Room(e) => write!(f, "Room error: {}", e),
-            Error::Peer(e) => write!(f, "Peer error: {}", e),
-            Error::Media(e) => write!(f, "Media error: {}", e),
-            Error::IO(e) => write!(f, "IO error: {}", e),
-            Error::Turn(e) => write!(f, "TURN error: {}", e),
-            Error::AddrParse(e) => write!(f, "Address parse error: {}", e),
+            Error::WebRTCError(msg) => write!(f, "WebRTC error: {}", msg),
+            Error::WebSocketError(msg) => write!(f, "WebSocket error: {}", msg),
+            Error::ConnectionError(msg) => write!(f, "Connection error: {}", msg),
+            Error::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+            Error::InvalidMessage(msg) => write!(f, "Invalid message: {}", msg),
+            Error::Room(msg) => write!(f, "Room error: {}", msg),
+            Error::Peer(msg) => write!(f, "Peer error: {}", msg),
+            Error::Media(msg) => write!(f, "Media error: {}", msg),
+            Error::IO(msg) => write!(f, "IO error: {}", msg),
+            Error::Turn(msg) => write!(f, "TURN error: {}", msg),
+            Error::AddrParse(msg) => write!(f, "Address parse error: {}", msg),
         }
     }
 }
 
-impl StdError for Error {}
-
-impl From<serde_json::Error> for Error {
-    fn from(error: serde_json::Error) -> Self {
-        Error::Json(error)
+impl From<WebRTCError> for Error {
+    fn from(err: WebRTCError) -> Self {
+        Error::WebRTCError(err.to_string())
     }
 }
 
-impl From<webrtc::Error> for Error {
-    fn from(error: webrtc::Error) -> Self {
-        Error::Media(error.to_string())
+impl From<WsError> for Error {
+    fn from(err: WsError) -> Self {
+        Error::WebSocketError(err.to_string())
     }
 }
 
-impl From<tokio_tungstenite::tungstenite::Error> for Error {
-    fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
-        Error::WebSocket(err)
+impl From<IoError> for Error {
+    fn from(err: IoError) -> Self {
+        Error::IO(err.to_string())
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(error: std::io::Error) -> Self {
-        Error::IO(error)
+impl From<TurnError> for Error {
+    fn from(err: TurnError) -> Self {
+        Error::Turn(err.to_string())
     }
 }
 
-impl From<turn::Error> for Error {
-    fn from(error: turn::Error) -> Self {
-        Error::Turn(error)
+impl From<SerdeError> for Error {
+    fn from(err: SerdeError) -> Self {
+        Error::SerializationError(err.to_string())
     }
 }
 
 impl From<AddrParseError> for Error {
-    fn from(error: AddrParseError) -> Self {
-        Error::AddrParse(error)
+    fn from(err: AddrParseError) -> Self {
+        Error::AddrParse(err.to_string())
     }
 }
+
+impl StdError for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>; 

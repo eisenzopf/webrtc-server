@@ -17,6 +17,8 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
 use std::time::SystemTime;
+use crate::utils::{Error, Result};
+use futures_util::SinkExt;
 
 // Re-export room types
 pub use crate::room::state::{Room, MediaSettings, MediaType};
@@ -24,22 +26,55 @@ pub use crate::room::state::{Room, MediaSettings, MediaType};
 // Define WebSocketSender type
 pub type WebSocketSender = SplitSink<WebSocketStream<TcpStream>, Message>;
 
+#[derive(Debug, Clone)]
+pub struct WebSocketConnection {
+    sender: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+}
+
+impl WebSocketConnection {
+    pub fn new(sender: WebSocketSender) -> Self {
+        Self {
+            sender: Arc::new(Mutex::new(sender))
+        }
+    }
+
+    pub async fn send(&self, message: Message) -> Result<()> {
+        let mut sender = self.sender.lock().await;
+        sender.send(message).await.map_err(|e| Error::WebSocketError(e.to_string()))?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "message_type")]
 pub enum SignalingMessage {
     Join {
         room_id: String,
         peer_id: String,
-        #[serde(skip)]
-        sender: Option<Arc<Mutex<WebSocketSender>>>,
+    },
+    RequestPeerList {
+        room_id: String,
+    },
+    PeerList {
+        room_id: String,
+        peers: Vec<String>,
+    },
+    CallRequest {
+        room_id: String,
+        from_peer: String,
+        to_peers: Vec<String>,
+        sdp: String,
+    },
+    CallResponse {
+        room_id: String,
+        from_peer: String,
+        to_peer: String,
+        accepted: bool,
+        reason: Option<String>,
     },
     Disconnect {
         room_id: String,
         peer_id: String,
-    },
-    PeerList {
-        peers: Vec<String>,
-        room_id: String,
     },
     Offer {
         room_id: String,
@@ -59,11 +94,6 @@ pub enum SignalingMessage {
         from_peer: String,
         to_peer: String,
     },
-    RequestPeerList,
-    InitiateCall {
-        peer_id: String,
-        room_id: String,
-    },
     MediaError {
         error_type: String,
         description: String,
@@ -76,11 +106,6 @@ pub enum SignalingMessage {
     PeerDisconnected {
         room_id: String,
         peer_id: String,
-    },
-    CallRequest {
-        room_id: String,
-        from_peer: String,
-        to_peers: Vec<String>,
     },
 }
 

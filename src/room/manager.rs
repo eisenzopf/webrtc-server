@@ -8,15 +8,15 @@ use crate::media::MediaRelay;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
+use webrtc::api::APIBuilder;
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::ice_transport::ice_server::RTCIceServer;
+use crate::media::MediaRelayManager;
 
 pub struct RoomManager {
     rooms: Arc<RwLock<HashMap<String, Room>>>,
-    stun_server: String,
-    stun_port: u16,
-    turn_server: String,
-    turn_port: u16,
-    turn_username: String,
-    turn_password: String,
+    relay_manager: Arc<MediaRelayManager>,
 }
 
 impl RoomManager {
@@ -30,12 +30,14 @@ impl RoomManager {
     ) -> Self {
         Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
-            stun_server,
-            stun_port,
-            turn_server,
-            turn_port,
-            turn_username,
-            turn_password,
+            relay_manager: Arc::new(MediaRelayManager::new(
+                stun_server,
+                stun_port,
+                turn_server,
+                turn_port,
+                turn_username,
+                turn_password,
+            )),
         }
     }
 
@@ -84,37 +86,10 @@ impl RoomManager {
             return Err(Error::Room("Room is full".to_string()));
         }
 
-        // Create API and configuration for the peer connection
-        let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
-        media_engine.register_default_codecs()?;
-
-        let api = webrtc::api::APIBuilder::new()
-            .with_media_engine(media_engine)
-            .build();
-
-        let config = webrtc::peer_connection::configuration::RTCConfiguration {
-            ice_servers: vec![
-                webrtc::ice_transport::ice_server::RTCIceServer {
-                    urls: vec![
-                        format!("stun:{}:{}", self.stun_server, self.stun_port),
-                        format!("turn:{}:{}", self.turn_server, self.turn_port)
-                    ],
-                    username: self.turn_username.clone(),
-                    credential: self.turn_password.clone(),
-                    credential_type: RTCIceCredentialType::Password,
-                    ..Default::default()
-                },
-            ],
-            ice_transport_policy: RTCIceTransportPolicy::All,
-            ..Default::default()
-        };
-
-        // Create the peer connection
-        let peer_connection = Arc::new(api.new_peer_connection(config).await?);
-
-        let media_relay = MediaRelay::new(peer_connection, peer_id.clone());
-
-        room.peers.push((peer_id, media_relay));
+        // Create the relay through MediaRelayManager
+        let relay = self.relay_manager.create_relay(peer_id.clone()).await?;
+        
+        room.peers.push((peer_id, relay));
         Ok(())
     }
 
@@ -125,6 +100,20 @@ impl RoomManager {
             .ok_or_else(|| Error::Room(format!("Room {} not found", room_id)))?;
 
         room.peers.retain(|(id, _)| id != peer_id);
+        Ok(())
+    }
+
+    pub async fn add_peer(&mut self, room_id: &str, peer_id: String) -> Result<()> {
+        let mut rooms = self.rooms.write().await;
+        let room = rooms
+            .get_mut(room_id)
+            .ok_or_else(|| Error::Room(format!("Room {} not found", room_id)))?;
+
+        // Create the media relay through MediaRelayManager
+        let relay = self.relay_manager.create_relay(peer_id.clone()).await?;
+        
+        // Add to room
+        room.peers.push((peer_id, relay));
         Ok(())
     }
 } 

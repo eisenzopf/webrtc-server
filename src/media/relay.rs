@@ -1,5 +1,9 @@
 use crate::utils::{Error, Result};
+use crate::types::SignalingMessage;
 use std::sync::Arc;
+use std::fmt;
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::api::APIBuilder;
@@ -7,20 +11,14 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
-use log::{debug, info, warn, error};
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::stats::StatsReportType;
-use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
-use webrtc::peer_connection::policy::bundle_policy::RTCBundlePolicy;
-use webrtc::peer_connection::policy::rtcp_mux_policy::RTCRtcpMuxPolicy;
-use crate::types::SignalingMessage;
 use bytes::Bytes;
 use tokio::sync::Mutex;
-use webrtc::data_channel::RTCDataChannel;
-use std::fmt;
-use webrtc::ice::network_type::NetworkType;
+use log::{debug, info, warn, error};
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
@@ -37,7 +35,12 @@ pub struct MediaRelay {
 
 pub struct MediaRelayManager {
     relays: Arc<tokio::sync::RwLock<std::collections::HashMap<String, MediaRelay>>>,
-    turn_config: Option<RTCIceServer>,
+    stun_server: String,
+    stun_port: u16,
+    turn_server: String,
+    turn_port: u16,
+    turn_username: String,
+    turn_password: String,
 }
 
 #[derive(Debug, Clone)]
@@ -50,14 +53,32 @@ pub struct MediaStats {
 }
 
 impl MediaRelay {
-    pub fn new(peer_connection: Arc<RTCPeerConnection>, peer_id: String) -> Self {
-        Self {
+    pub async fn new(peer_connection: Arc<RTCPeerConnection>, peer_id: String) -> Result<Self> {
+        // Add audio transceiver with sendrecv direction
+        let tr_init = RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Sendrecv,
+            send_encodings: vec![],
+        };
+
+        peer_connection.add_transceiver_from_kind(
+            RTPCodecType::Audio,
+            Some(tr_init),
+        ).await?;
+
+        // Set up track handlers
+        peer_connection.on_track(Box::new(move |track, _, _| {
+            Box::pin(async move {
+                debug!("Received track: {:?}", track);
+            })
+        }));
+
+        Ok(MediaRelay {
             peer_connection,
+            peer_id,
             audio_track: None,
             video_track: None,
-            peer_id,
             data_channel: Arc::new(Mutex::new(None)),
-        }
+        })
     }
 
     pub async fn get_stats(&self) -> Result<MediaStats> {
@@ -111,159 +132,52 @@ impl MediaRelay {
 }
 
 impl MediaRelayManager {
-    pub fn new_with_turn(turn_ip: &str, turn_port: u16, username: &str, password: &str) -> Self {
+    pub fn new(
+        stun_server: String,
+        stun_port: u16,
+        turn_server: String,
+        turn_port: u16,
+        turn_username: String,
+        turn_password: String,
+    ) -> Self {
         Self {
-            relays: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            turn_config: Some(RTCIceServer {
-                urls: vec![
-                    format!("stun:{}:{}", turn_ip, turn_port),
-                    format!("turn:{}:{}", turn_ip, turn_port),
-                ],
-                username: username.to_string(),
-                credential: password.to_string(),
-                credential_type: RTCIceCredentialType::Password,
-                ..Default::default()
-            }),
+            relays: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            stun_server,
+            stun_port,
+            turn_server,
+            turn_port,
+            turn_username,
+            turn_password,
         }
     }
 
-    pub fn new() -> Self {
-        Self {
-            relays: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            turn_config: None,
-        }
-    }
-
-    pub async fn create_relay(
-        &self, 
-        peer_id: String,
-        room_id: String,
-        remote_peer_id: String,
-        handler: Arc<impl SignalingHandler + Send + Sync + 'static>
-    ) -> Result<MediaRelay> {
-        debug!("Creating new relay for peer {} in room {}", peer_id, room_id);
-        let mut ice_servers = vec![];
-
-        if let Some(turn_config) = &self.turn_config {
-            ice_servers.push(turn_config.clone());
-        }
-
-        // Create a new MediaEngine
+    pub async fn create_relay(&self, peer_id: String) -> Result<MediaRelay> {
         let mut media_engine = MediaEngine::default();
-        
-        // Register default codecs
         media_engine.register_default_codecs()?;
 
-        // Create an API with the MediaEngine
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
             .build();
 
-        // Create ICE servers configuration
         let config = RTCConfiguration {
-            ice_servers,
-            ice_transport_policy: RTCIceTransportPolicy::All,
-            bundle_policy: RTCBundlePolicy::MaxBundle,
-            rtcp_mux_policy: RTCRtcpMuxPolicy::Require,
-            ice_candidate_pool_size: 10,
-            peer_identity: String::new(),
-            certificates: Vec::new(),
+            ice_servers: vec![
+                RTCIceServer {
+                    urls: vec![
+                        format!("stun:{}:{}", self.stun_server, self.stun_port),
+                        format!("turn:{}:{}", self.turn_server, self.turn_port),
+                    ],
+                    username: self.turn_username.clone(),
+                    credential: self.turn_password.clone(),
+                    credential_type: RTCIceCredentialType::Password,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
         };
 
-        // Create a new PeerConnection
-        let peer_connection = api.new_peer_connection(config).await?;
-
-        // Set up handlers for the peer connection
-        let pc = Arc::new(peer_connection);
-        let pc_clone = pc.clone();
-        let peer_id_clone = peer_id.clone();
-        let handler_clone = handler.clone();
-
-        // Handle incoming tracks
-        pc.on_track(Box::new(move |track, _, _| {
-            let pc = pc_clone.clone();
-            Box::pin(async move {
-                // Create a new local track based on the track type
-                let (track_id, track_type) = match track.kind() {
-                    webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio => {
-                        ("audio-relay", "audio")
-                    },
-                    webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video => {
-                        ("video-relay", "video")
-                    },
-                    _ => {
-                        error!("Unsupported track type: {:?}", track.kind());
-                        return;
-                    }
-                };
-
-                let local_track = Arc::new(TrackLocalStaticRTP::new(
-                    track.codec().capability,
-                    format!("{}-{}", track_id, track.stream_id()),
-                    track.stream_id(),
-                ));
-
-                // Add the track to the peer connection
-                if let Err(e) = pc.add_track(local_track.clone()).await {
-                    error!("Failed to add {} track: {}", track_type, e);
-                } else {
-                    debug!("Successfully added {} track to peer connection", track_type);
-                }
-            })
-        }));
-
-        // Clone values that will be moved into the closure
-        let room_id_clone = room_id.clone();
-        let remote_peer_id_clone = remote_peer_id.clone();
-        let peer_id_clone = peer_id.clone();
-        let handler_clone = handler.clone();
-
-        pc.on_ice_candidate(Box::new(move |c| {
-            let peer_id = peer_id_clone.clone();
-            let room_id = room_id_clone.clone();
-            let remote_peer_id = remote_peer_id_clone.clone();
-            let handler = handler_clone.clone();
-            
-            Box::pin(async move {
-                if let Some(c) = c {
-                    // Create a simplified candidate structure that matches the client
-                    let candidate_init = match c.to_json() {
-                        Ok(init) => serde_json::json!({
-                            "candidate": init.candidate,
-                            "sdpMid": init.sdp_mid,
-                            "sdpMLineIndex": init.sdp_mline_index,
-                            "usernameFragment": init.username_fragment
-                        }),
-                        Err(e) => {
-                            error!("Failed to convert ICE candidate to JSON: {}", e);
-                            return;
-                        }
-                    };
-
-                    let candidate_msg = SignalingMessage::IceCandidate {
-                        room_id,
-                        candidate: candidate_init.to_string(),
-                        from_peer: peer_id,
-                        to_peer: remote_peer_id.clone(),
-                    };
-                    
-                    if let Err(e) = handler.send_to_peer(&remote_peer_id, &candidate_msg).await {
-                        error!("Failed to send ICE candidate: {}", e);
-                    }
-                }
-            })
-        }));
-
-        // Create data channel
-        let dc = pc.create_data_channel("signaling", None).await?;
+        let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+        let relay = MediaRelay::new(peer_connection, peer_id.clone()).await?;
         
-        // Create the MediaRelay instance
-        let relay = MediaRelay::new(pc.clone(), peer_id.clone());
-        
-        // Store the data channel
-        relay.set_data_channel(dc).await;
-
-        // Store the relay
         let mut relays = self.relays.write().await;
         relays.insert(peer_id, relay.clone());
 
@@ -413,6 +327,40 @@ impl MediaRelayManager {
 
     pub async fn get_relays(&self) -> Result<HashMap<String, MediaRelay>> {
         Ok(self.relays.read().await.clone())
+    }
+
+    pub async fn add_peer(&self, room_id: &str, peer_id: String) -> Result<()> {
+        let mut relays = self.relays.write().await;
+        
+        // Create API and configuration for the peer connection
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+
+        let api = APIBuilder::new()
+            .with_media_engine(media_engine)
+            .build();
+
+        let config = RTCConfiguration {
+            ice_servers: vec![
+                RTCIceServer {
+                    urls: vec![
+                        format!("stun:{}:{}", self.stun_server, self.stun_port),
+                        format!("turn:{}:{}", self.turn_server, self.turn_port)
+                    ],
+                    username: self.turn_username.clone(),
+                    credential: self.turn_password.clone(),
+                    credential_type: RTCIceCredentialType::Password,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let peer_connection = Arc::new(api.new_peer_connection(config).await?);
+        let media_relay = MediaRelay::new(peer_connection, peer_id.clone()).await?;
+
+        relays.insert(peer_id, media_relay);
+        Ok(())
     }
 }
 

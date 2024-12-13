@@ -14,9 +14,9 @@ pub struct StunService {
 impl StunService {
     pub async fn new(addr: &str) -> Result<Self> {
         let addr = addr.parse()
-            .map_err(|e| {
+            .map_err(|e: std::net::AddrParseError| {
                 error!("Failed to parse address {}: {}", addr, e);
-                Error::IO(std::io::Error::new(std::io::ErrorKind::Other, e))
+                Error::IO(e.to_string())
             })?;
 
         Ok(Self { addr })
@@ -28,7 +28,7 @@ impl StunService {
         let socket = UdpSocket::bind(self.addr).await
             .map_err(|e| {
                 error!("Failed to bind UDP socket: {}", e);
-                Error::IO(e)
+                Error::IO(e.to_string())
             })?;
 
         let mut buf = vec![0u8; 1024];
@@ -86,7 +86,7 @@ impl StunService {
                 }
                 Err(e) => {
                     error!("Socket receive error: {}", e);
-                    return Err(Error::IO(e));
+                    return Err(Error::IO(e.to_string()));
                 }
             }
         }

@@ -1,9 +1,9 @@
 use crate::utils::{Error, Result};
 use crate::signaling::handler::MessageHandler;
-use crate::types::{SignalingMessage, WebSocketSender};
-use tokio::net::TcpListener;
+use crate::types::{SignalingMessage, WebSocketSender, WebSocketConnection};
+use tokio::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::{accept_async, WebSocketStream};
 use futures_util::{StreamExt, SinkExt};
 use log::{info, warn, error, debug};
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
@@ -12,6 +12,9 @@ use serde_json::json;
 use warp::{Filter, Reply};
 use crate::media::MediaRelayManager;
 use warp::reject;
+use tokio::sync::Mutex;
+use std::net::SocketAddr;
+use tokio_tungstenite::tungstenite::Message;
 
 pub struct SignalingServer {
     address: String,
@@ -28,13 +31,7 @@ impl SignalingServer {
     }
 
     pub async fn run(&self) -> Result<()> {
-        info!("Starting server on {}", self.address);
-        let listener = TcpListener::bind(&self.address).await
-            .map_err(|e| {
-                error!("Failed to bind to address {}: {}", self.address, e);
-                Error::IO(e)
-            })?;
-
+        let listener = TcpListener::bind(&self.address).await?;
         info!("Server successfully bound to {}", self.address);
 
         while let Ok((stream, addr)) = listener.accept().await {
@@ -42,75 +39,46 @@ impl SignalingServer {
             let handler = self.handler.clone();
             
             tokio::spawn(async move {
-                if let Err(e) = Self::handle_connection(stream, handler).await {
-                    error!("Connection error from {}: {}", addr, e);
+                let ws_stream = accept_async(stream).await
+                    .map_err(|e| Error::WebSocketError(e.to_string()))?;
+                
+                if let Err(e) = Self::handle_connection(ws_stream, addr, handler).await {
+                    error!("Connection error: {}", e);
                 }
+                Ok::<_, Error>(())
             });
         }
 
-        warn!("Server accept loop terminated");
         Ok(())
     }
 
-    async fn handle_connection(
-        stream: tokio::net::TcpStream,
+    pub async fn handle_connection(
+        ws_stream: WebSocketStream<TcpStream>,
+        addr: SocketAddr,
         handler: Arc<MessageHandler>,
     ) -> Result<()> {
-        let peer_addr = stream.peer_addr()?;
-        let ws_stream = accept_async(stream).await?;
-        
-        info!("Successfully established WebSocket connection with {}", peer_addr);
         let (ws_sender, mut ws_receiver) = ws_stream.split();
-        let ws_sender = Arc::new(tokio::sync::Mutex::new(ws_sender));
+        let ws_conn = WebSocketConnection::new(ws_sender);
         
-        let mut current_peer_id: Option<String> = None;
-        let mut current_room_id: Option<String> = None;
+        // We'll store this connection temporarily until we get the Join message
+        let temp_id = format!("temp_{}", addr);
+        handler.set_websocket_sender(temp_id.clone(), ws_conn.clone()).await?;
 
-        // Handle messages and disconnection
-        let media_relay = handler.media_relay.clone();
-        
         while let Some(msg) = ws_receiver.next().await {
-            match msg {
-                Ok(msg) => {
-                    if let Ok(msg_str) = msg.to_text() {
-                        debug!("Received message from {}: {}", peer_addr, msg_str);
-                        if let Ok(mut signal_msg) = serde_json::from_str::<SignalingMessage>(msg_str) {
-                            // For Join messages, include the sender
-                            if let SignalingMessage::Join { ref peer_id, ref room_id, ref mut sender } = signal_msg {
-                                current_peer_id = Some(peer_id.clone());
-                                current_room_id = Some(room_id.clone());
-                                *sender = Some(ws_sender.clone());
-                                
-                                debug!("Join message received from peer {} for room {}", peer_id, room_id);
-                            }
-                            
-                            if let Err(e) = handler.handle_message(signal_msg).await {
-                                error!("Error handling message: {}", e);
-                                // Don't break on message handling errors unless it's a critical failure
-                                if e.to_string().contains("closed connection") {
-                                    break;
-                                }
-                            }
-                        }
-                    }
+            let msg = msg?;
+            if let Message::Text(text) = msg {
+                let message: SignalingMessage = serde_json::from_str(&text)?;
+                
+                // If this is a Join message, update the WebSocket sender with the real peer_id
+                if let SignalingMessage::Join { peer_id, .. } = &message {
+                    handler.set_websocket_sender(peer_id.clone(), ws_conn.clone()).await?;
+                    // Remove temporary connection
+                    handler.remove_websocket_sender(&temp_id).await?;
                 }
-                Err(e) => {
-                    // Log the error but don't propagate WebSocket closure errors
-                    if !e.to_string().contains("closed connection") {
-                        error!("WebSocket error for peer {}: {}", peer_addr, e);
-                    }
-                    break;
-                }
+                
+                handler.handle_message(message).await?;
             }
         }
-
-        // Handle normal closure
-        if let (Some(peer_id), Some(room_id)) = (current_peer_id, current_room_id) {
-            info!("WebSocket closed for peer {} in room {}", peer_id, room_id);
-            // Ignore errors during disconnect handling since the connection is already closed
-            let _ = handler.handle_peer_disconnect(&peer_id, &room_id).await;
-        }
-
         Ok(())
     }
 }

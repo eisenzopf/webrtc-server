@@ -1,7 +1,7 @@
 use crate::utils::{Error, Result};
 use crate::room::Room;
 use crate::metrics::ConnectionMetrics;
-use crate::types::{SignalingMessage, WebSocketSender};
+use crate::types::{SignalingMessage, WebSocketSender, WebSocketConnection};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use std::collections::HashMap;
@@ -21,390 +21,232 @@ use webrtc::{
     ice_transport::{
         ice_server::RTCIceServer,
         ice_connection_state::RTCIceConnectionState,
-    },
-    rtp_transceiver::{
-        rtp_codec::RTCRtpCodecCapability,
-        rtp_receiver::RTCRtpReceiver,
-        RTCRtpTransceiver,
-    },
-    track::{
-        track_remote::TrackRemote,
-        track_local::track_local_static_rtp::TrackLocalStaticRTP,
+        ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
     },
 };
 use crate::media::{MediaRelayManager, MediaRelay};
-use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
-use webrtc::track::track_local::TrackLocal;
-use log::{info, error};
-use crate::media::relay::SignalingHandler;
+use log::{info, error, debug, warn};
 
-pub type PeerConnection = (String, Arc<Mutex<WebSocketSender>>);
-pub type PeerMap = Arc<RwLock<HashMap<String, Vec<PeerConnection>>>>;
-
-#[derive(Clone)]
 pub struct MessageHandler {
-    rooms: Arc<RwLock<HashMap<String, Room>>>,
-    peers: Arc<RwLock<HashMap<String, Vec<(String, Arc<Mutex<WebSocketSender>>)>>>>,
-    pub media_relay: Arc<MediaRelayManager>,
+    relay_manager: Arc<MediaRelayManager>,
+    websocket_senders: Arc<RwLock<HashMap<String, WebSocketConnection>>>,
 }
 
 impl MessageHandler {
-    pub fn new(media_relay: Arc<MediaRelayManager>) -> Self {
+    pub fn new(relay_manager: Arc<MediaRelayManager>) -> Self {
         Self {
-            rooms: Arc::new(RwLock::new(HashMap::new())),
-            peers: Arc::new(RwLock::new(HashMap::new())),
-            media_relay,
+            relay_manager,
+            websocket_senders: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    async fn handle_join(
-        &self,
-        room_id: String,
-        peer_id: String,
-        ws_sender: Arc<Mutex<WebSocketSender>>
-    ) -> Result<()> {
-        // Create Arc of self (MessageHandler) instead of reference
-        let handler = Arc::new(self.clone());
-        
-        let relay = self.media_relay.create_relay(
-            peer_id.clone(),
-            room_id.clone(),
-            peer_id.clone(), // This might need to be adjusted depending on your peer-to-peer logic
-            handler
-        ).await?;
-        
-        // Add peer to room with the relay
-        let mut rooms = self.rooms.write().await;
-        let room = rooms.entry(room_id.clone())
-            .or_insert_with(Room::default);
-        
-        room.add_peer(peer_id.clone(), relay)?;
-
-        // Store WebSocket sender
-        let mut peers = self.peers.write().await;
-        let room_peers = peers.entry(room_id.clone())
-            .or_insert_with(Vec::new);
-        room_peers.push((peer_id.clone(), ws_sender));
-
-        let peer_ids: Vec<String> = room_peers.iter().map(|(id, _)| id.clone()).collect();
-        let peer_list_msg = SignalingMessage::PeerList { 
-            peers: peer_ids,
-            room_id: room_id.clone(),
-        };
-
-        for (_, sender) in room_peers {
-            let msg_str = serde_json::to_string(&peer_list_msg)?;
-            let mut sender_guard = sender.lock().await;
-            let _ = sender_guard.send(Message::Text(msg_str)).await;
-        }
-
-        Ok(())
-    }
-
-    async fn handle_offer(&self, room_id: &str, from_peer: &str, to_peer: &str, sdp: &str) -> Result<()> {
-        let rooms = self.rooms.read().await;
-        if let Some(room) = rooms.get(room_id) {
-            if let Some(relay) = room.get_peer_relay(to_peer) {
-                // Set the remote description on the relay's peer connection
-                let desc = RTCSessionDescription::offer(sdp.to_string())?;
-                relay.peer_connection.set_remote_description(desc).await?;
-
-                // Create answer with proper configuration
-                let answer = relay.peer_connection.create_answer(None).await?;
-                
-                // Important: Set local description before sending answer
-                relay.peer_connection.set_local_description(answer.clone()).await?;
-
-                // Wait for ICE gathering to complete
-                let mut gathering_complete = relay.peer_connection.gathering_complete_promise().await;
-                let _ = gathering_complete.recv().await;
-
-                // Get the complete local description with ICE candidates
-                let local_desc = relay.peer_connection.local_description().await
-                    .ok_or_else(|| Error::Peer("No local description available".to_string()))?;
-
-                // Send answer back through signaling
-                let answer_msg = SignalingMessage::Answer {
-                    room_id: room_id.to_string(),
-                    sdp: local_desc.sdp,
-                    from_peer: to_peer.to_string(),
-                    to_peer: from_peer.to_string(),
-                };
-                self.send_to_peer(from_peer, &answer_msg).await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_ice_candidate(&self, room_id: &str, from_peer: &str, to_peer: &str, candidate: &RTCIceCandidateInit) -> Result<()> {
-        let rooms = self.rooms.read().await;
-        if let Some(room) = rooms.get(room_id) {
-            // First, relay the ICE candidate message to the other peer
-            let ice_msg = SignalingMessage::IceCandidate {
-                room_id: room_id.to_string(),
-                candidate: serde_json::to_string(candidate)?,
-                from_peer: from_peer.to_string(),
-                to_peer: to_peer.to_string(),
-            };
-            self.send_to_peer(to_peer, &ice_msg).await?;
-
-            // Then, only add it to the peer connection if remote description is set
-            if let Some(relay) = room.get_peer_relay(to_peer) {
-                if relay.peer_connection.remote_description().await.is_some() {
-                    relay.peer_connection.add_ice_candidate(candidate.clone()).await?;
-                } else {
-                    // Log that we're skipping this candidate due to no remote description
-                    info!("Skipping ICE candidate for peer {} - remote description not yet set", to_peer);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_call_request(
+    pub async fn handle_offer(
         &self,
         room_id: String,
         from_peer: String,
-        to_peers: Vec<String>
+        to_peer: String,
+        sdp: String,
     ) -> Result<()> {
-        info!("Handling call request from {} to {:?}", from_peer, to_peers);
+        let relays = self.relay_manager.get_relays().await?;
         
-        // Get the caller's relay
-        let caller_relay = self.get_peer_relay(&from_peer).await?
-            .ok_or_else(|| Error::Peer(format!("Caller {} not found", from_peer)))?;
-
-        // Wait for ICE gathering to complete before creating and sending the offer
-        let mut gathering_complete = caller_relay.peer_connection.gathering_complete_promise().await;
-
-        // Create offer on the caller's relay
-        let offer = caller_relay.peer_connection.create_offer(None).await?;
-        caller_relay.peer_connection.set_local_description(offer.clone()).await?;
-
-        // Wait for ICE gathering to complete
-        let _ = gathering_complete.recv().await;
-
-        // Get the complete local description with ICE candidates
-        let local_desc = caller_relay.peer_connection.local_description().await
-            .ok_or_else(|| Error::Peer("No local description available".to_string()))?;
-
-        // Send offer to each target peer
-        for peer_id in to_peers {
-            let offer_msg = SignalingMessage::Offer {
-                room_id: room_id.clone(),
-                sdp: local_desc.sdp.clone(),
-                from_peer: from_peer.clone(),
-                to_peer: peer_id.clone(),
+        if let Some(relay) = relays.get(&to_peer) {
+            debug!("Setting remote description for peer {}", to_peer);
+            
+            let offer = RTCSessionDescription::offer(sdp)?;
+            relay.peer_connection.set_remote_description(offer).await?;
+            
+            debug!("Creating answer for peer {}", to_peer);
+            let answer = relay.peer_connection.create_answer(None).await?;
+            
+            debug!("Setting local description for peer {}", to_peer);
+            relay.peer_connection.set_local_description(answer.clone()).await?;
+            
+            let answer_msg = SignalingMessage::Answer {
+                room_id,
+                sdp: answer.sdp,
+                from_peer: to_peer,
+                to_peer: from_peer.clone(),
             };
-            self.send_to_peer(&peer_id, &offer_msg).await?;
+            
+            self.send_message(&answer_msg).await?;
+            debug!("Sent answer to peer {}", from_peer);
         }
 
+        Ok(())
+    }
+
+    pub async fn handle_ice_candidate(
+        &self,
+        room_id: String,
+        from_peer: String,
+        to_peer: String,
+        candidate: String,
+    ) -> Result<()> {
+        let relays = self.relay_manager.get_relays().await?;
+        
+        if let Some(relay) = relays.get(&to_peer) {
+            match serde_json::from_str::<RTCIceCandidateInit>(&candidate) {
+                Ok(ice_candidate) => {
+                    match relay.peer_connection.add_ice_candidate(ice_candidate).await {
+                        Ok(_) => {
+                            debug!("Successfully added ICE candidate for peer {}", to_peer);
+                        }
+                        Err(e) => {
+                            warn!("Could not add ICE candidate for {}: {}", to_peer, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to parse ICE candidate: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn send_message(&self, msg: &SignalingMessage) -> Result<()> {
+        let json = serde_json::to_string(msg)?;
+        let senders = self.websocket_senders.read().await;
+        
+        for ws_conn in senders.values() {
+            if let Err(e) = ws_conn.send(Message::Text(json.clone())).await {
+                warn!("Failed to send message to peer: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn remove_websocket_sender(&self, peer_id: &str) -> Result<()> {
+        let mut senders = self.websocket_senders.write().await;
+        senders.remove(peer_id);
         Ok(())
     }
 
     pub async fn handle_message(&self, message: SignalingMessage) -> Result<()> {
         match message {
-            SignalingMessage::EndCall { room_id, peer_id } => {
-                info!("Handling EndCall from peer {} in room {}", peer_id, room_id);
-                self.media_relay.handle_peer_disconnect(&peer_id, &room_id).await?;
-                Ok(())
-            },
-            SignalingMessage::PeerDisconnected { room_id, peer_id } => {
-                info!("Handling peer disconnection for {} in room {}", peer_id, room_id);
-                self.media_relay.handle_peer_disconnect(&peer_id, &room_id).await?;
-                Ok(())
-            },
-            SignalingMessage::Join { room_id, peer_id, sender } => {
-                if let Some(sender) = sender {
-                    self.handle_join(room_id, peer_id, sender).await
-                } else {
-                    Err(Error::Peer("No WebSocket sender provided for Join message".to_string()))
-                }
+            SignalingMessage::Join { room_id, peer_id } => {
+                self.handle_join(room_id, peer_id).await
+            }
+            SignalingMessage::RequestPeerList { room_id } => {
+                self.handle_peer_list_request(room_id).await
+            }
+            SignalingMessage::CallRequest { room_id, from_peer, to_peers, sdp } => {
+                self.handle_call_request(room_id, from_peer, to_peers, sdp).await
+            }
+            SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted, reason } => {
+                self.handle_call_response(room_id, from_peer, to_peer, accepted, reason).await
             }
             SignalingMessage::Offer { room_id, sdp, from_peer, to_peer } => {
-                self.handle_offer(&room_id, &from_peer, &to_peer, &sdp).await
-            }
-            SignalingMessage::Answer { room_id, sdp, from_peer, to_peer } => {
-                let rooms = self.rooms.read().await;
-                if let Some(room) = rooms.get(&room_id) {
-                    if let Some(relay) = room.get_peer_relay(&to_peer) {
-                        let desc = RTCSessionDescription::answer(sdp)?;
-                        relay.peer_connection.set_remote_description(desc).await?;
-                    }
-                }
-                Ok(())
+                self.handle_offer(room_id, from_peer, to_peer, sdp).await
             }
             SignalingMessage::IceCandidate { room_id, candidate, from_peer, to_peer } => {
-                let candidate_init = serde_json::from_str::<RTCIceCandidateInit>(&candidate)?;
-                self.handle_ice_candidate(&room_id, &from_peer, &to_peer, &candidate_init).await
-            }
-            SignalingMessage::Disconnect { room_id, peer_id } => {
-                self.media_relay.remove_relay(&peer_id).await?;
-                
-                let mut rooms = self.rooms.write().await;
-                if let Some(room) = rooms.get_mut(&room_id) {
-                    room.remove_peer(&peer_id);
-                }
-
-                let mut peers = self.peers.write().await;
-                if let Some(room_peers) = peers.get_mut(&room_id) {
-                    room_peers.retain(|(id, _)| id != &peer_id);
-                }
-                Ok(())
-            }
-            SignalingMessage::PeerList { .. } => {
-                Ok(())
-            }
-            SignalingMessage::RequestPeerList => {
-                Ok(())
-            }
-            SignalingMessage::InitiateCall { .. } => {
-                Ok(())
-            }
-            SignalingMessage::MediaError { .. } => {
-                Ok(())
-            }
-            SignalingMessage::CallRequest { room_id, from_peer, to_peers } => {
-                self.handle_call_request(room_id, from_peer, to_peers).await
+                self.handle_ice_candidate(room_id, from_peer, to_peer, candidate).await
             }
             _ => Ok(()),
         }
     }
 
-    async fn send_to_peer(&self, peer_id: &str, msg: &SignalingMessage) -> Result<()> {
-        let peers = self.peers.read().await;
-        for (_, room_peers) in peers.iter() {
-            for (id, sender) in room_peers {
-                if id == peer_id {
-                    let mut sender = sender.lock().await;
-                    let msg_str = serde_json::to_string(&msg)?;
-                    sender.send(Message::Text(msg_str)).await?;
-                    return Ok(());
-                }
-            }
-        }
-        Err(Error::Peer(format!("Peer {} not found", peer_id)))
-    }
-
-    async fn broadcast_to_room(&self, room_id: &str, msg: &SignalingMessage, exclude_peer: Option<&str>) -> Result<()> {
-        let peers = self.peers.read().await;
-        if let Some(room_peers) = peers.get(room_id) {
-            for (peer_id, sender) in room_peers {
-                if let Some(excluded) = exclude_peer {
-                    if peer_id == excluded {
-                        continue;
-                    }
-                }
-                let mut sender = sender.lock().await;
-                let msg_str = serde_json::to_string(&msg)?;
-                sender.send(Message::Text(msg_str)).await?;
-            }
-        }
+    pub async fn handle_disconnect(&self, peer_id: &str, room_id: &str) -> Result<()> {
+        // Implementation for disconnect handling
         Ok(())
     }
 
-    pub async fn get_peer_relay(&self, peer_id: &str) -> Result<Option<MediaRelay>> {
-        let rooms = self.rooms.read().await;
-        for room in rooms.values() {
-            if let Some(relay) = room.get_peer_relay(peer_id) {
-                return Ok(Some(relay.clone()));
-            }
-        }
-        Ok(None)
-    }
-
-    pub async fn broadcast_track(&self, from_peer: &str, track: Arc<TrackLocalStaticRTP>) -> Result<()> {
-        let rooms = self.rooms.read().await;
-        for room in rooms.values() {
-            if room.has_peer(from_peer) {
-                room.broadcast_track(from_peer, track.clone()).await?;
-                break;
-            }
-        }
+    pub async fn set_websocket_sender(&self, peer_id: String, ws_conn: WebSocketConnection) -> Result<()> {
+        let mut senders = self.websocket_senders.write().await;
+        senders.insert(peer_id, ws_conn);
         Ok(())
     }
 
-    async fn monitor_connection_state(&self, peer_id: &str, relay: &MediaRelay) {
-        let pc = relay.peer_connection.clone();
-        let peer_id_state = peer_id.to_string();
-        let peer_id_ice = peer_id.to_string();
-
-        pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            let peer_id = peer_id_state.clone();
-            Box::pin(async move {
-                info!(
-                    "Peer {} connection state changed to {:?}",
-                    peer_id, s
-                );
-                match s {
-                    RTCPeerConnectionState::Connected => {
-                        info!("Peer {} successfully connected", peer_id);
-                    }
-                    RTCPeerConnectionState::Failed => {
-                        error!("Peer {} connection failed", peer_id);
-                    }
-                    _ => {}
-                }
-            })
-        }));
-
-        pc.on_ice_candidate(Box::new(move |c| {
-            let peer_id = peer_id_ice.clone();
-            Box::pin(async move {
-                if let Some(c) = c {
-                    info!(
-                        "Peer {} generated ICE candidate: {:?}",
-                        peer_id, c
-                    );
-                }
-            })
-        }));
-    }
-
-    pub async fn handle_peer_disconnect(&self, peer_id: &str, room_id: &str) -> Result<()> {
-        // Remove peer from room
-        {
-            let mut rooms = self.rooms.write().await;
-            if let Some(room) = rooms.get_mut(room_id) {
-                if let Some(pos) = room.peers.iter().position(|(id, _)| id == peer_id) {
-                    room.peers.remove(pos);
-                }
-            }
-        }
+    pub async fn handle_join(&self, room_id: String, peer_id: String) -> Result<()> {
+        // First add the peer to the relay manager
+        self.relay_manager.add_peer(&room_id, peer_id.clone()).await?;
         
-        // Clean up media relay
-        self.media_relay.handle_peer_disconnect(peer_id, room_id).await?;
+        // Then get updated peer list
+        let relays = self.relay_manager.get_relays().await?;
+        let peer_ids: Vec<String> = relays.keys().cloned().collect();
         
-        // Broadcast updated peer list to remaining clients
-        self.broadcast_peer_list(room_id, Some(peer_id)).await?;
-        
-        Ok(())
-    }
-
-    async fn broadcast_peer_list(&self, room_id: &str, exclude_peer: Option<&str>) -> Result<()> {
-        let peers = {
-            let rooms = self.rooms.read().await;
-            if let Some(room) = rooms.get(room_id) {
-                room.peers.iter()
-                    .map(|(id, _)| id.clone())
-                    .filter(|id| Some(id.as_str()) != exclude_peer)
-                    .collect::<Vec<String>>()
-            } else {
-                return Ok(());
-            }
-        };
-
+        // Create peer list message
         let peer_list_msg = SignalingMessage::PeerList {
-            peers,
-            room_id: room_id.to_string(),
+            room_id: room_id.clone(),
+            peers: peer_ids,
         };
-
-        self.broadcast_to_room(room_id, &peer_list_msg, exclude_peer).await?;
+        
+        // Broadcast to all connected peers
+        self.broadcast_message(&peer_list_msg).await?;
+        
         Ok(())
     }
-}
 
-impl SignalingHandler for MessageHandler {
-    async fn send_to_peer(&self, peer_id: &str, msg: &SignalingMessage) -> Result<()> {
-        self.send_to_peer(peer_id, msg).await
+    pub async fn handle_peer_list_request(&self, room_id: String) -> Result<()> {
+        let relays = self.relay_manager.get_relays().await?;
+        let peer_ids: Vec<String> = relays.keys().cloned().collect();
+        
+        let peer_list_msg = SignalingMessage::PeerList {
+            room_id,
+            peers: peer_ids,
+        };
+        
+        self.send_message(&peer_list_msg).await?;
+        Ok(())
+    }
+
+    pub async fn broadcast_message(&self, msg: &SignalingMessage) -> Result<()> {
+        let json = serde_json::to_string(msg)?;
+        let senders = self.websocket_senders.read().await;
+        
+        for ws_conn in senders.values() {
+            if let Err(e) = ws_conn.send(Message::Text(json.clone())).await {
+                warn!("Failed to send message to peer: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn handle_call_request(
+        &self,
+        room_id: String,
+        from_peer: String,
+        to_peers: Vec<String>,
+        sdp: String,
+    ) -> Result<()> {
+        debug!("Handling call request from {} to {:?}", from_peer, to_peers);
+        // Forward the call request to each target peer
+        for to_peer in to_peers {
+            if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
+                let message = SignalingMessage::CallRequest {
+                    room_id: room_id.clone(),
+                    from_peer: from_peer.clone(),
+                    to_peers: vec![to_peer.clone()],
+                    sdp: sdp.clone(),
+                };
+                ws_sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
+                debug!("Forwarded call request to {}", to_peer);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn handle_call_response(
+        &self,
+        room_id: String,
+        from_peer: String,
+        to_peer: String,
+        accepted: bool,
+        reason: Option<String>,
+    ) -> Result<()> {
+        debug!("Handling call response from {} to {}: accepted={}", from_peer, to_peer, accepted);
+        if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
+            let message = SignalingMessage::CallResponse {
+                room_id,
+                from_peer,
+                to_peer: to_peer.clone(),
+                accepted,
+                reason,
+            };
+            ws_sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
+            debug!("Forwarded call response to {}", to_peer);
+        }
+        Ok(())
     }
 } 

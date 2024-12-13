@@ -13,6 +13,8 @@ use webrtc_server::signaling::server::run_debug_server;
 use log::{info, warn, error};
 use webrtc_server::signaling::turn::TurnServer;
 use webrtc_server::room::manager::RoomManager;
+use tokio::sync::Mutex;
+use webrtc_server::types::WebSocketConnection;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,15 +33,23 @@ async fn main() -> Result<()> {
         ],
     ).await?;
 
-    // Update WebRTC configuration to use the TURN server
-    let media_relay = Arc::new(MediaRelayManager::new_with_turn(
-        "192.168.1.68",  // TURN server IP
-        3478,            // TURN server port
-        "testuser",      // TURN username
-        "testpass",      // TURN password
+    // Create MediaRelayManager
+    let media_relay = Arc::new(MediaRelayManager::new(
+        "192.168.1.68".to_string(),  // STUN server IP
+        3478,                        // STUN port
+        "192.168.1.68".to_string(),  // TURN server IP
+        3478,                        // TURN port
+        "testuser".to_string(),      // TURN username
+        "testpass".to_string(),      // TURN password
     ));
 
-    let handler = Arc::new(MessageHandler::new(media_relay.clone()));
+    // Create MessageHandler
+    let handler = Arc::new(MessageHandler::new(
+        media_relay.clone(),
+    ));
+
+    // Create SignalingServer with the handler
+    let server = SignalingServer::new(handler);
 
     // Start the cleanup task
     let cleanup_manager = media_relay.clone();
@@ -81,7 +91,6 @@ async fn main() -> Result<()> {
     });
 
     // Run the main WebSocket server with shutdown handling
-    let server = SignalingServer::new(handler);
     select! {
         result = server.run() => {
             if let Err(e) = result {
