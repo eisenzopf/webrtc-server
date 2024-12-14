@@ -20,6 +20,7 @@ use bytes::Bytes;
 use tokio::sync::Mutex;
 use log::{debug, info, warn, error};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::track::track_local::track_local_static_rtp::RTCRtpCodecCapability;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
@@ -64,20 +65,39 @@ impl MediaRelay {
 
         peer_connection.add_transceiver_from_kind(
             RTPCodecType::Audio,
-            Some(tr_init),
+            Some(tr_init.clone()),
         ).await?;
 
+        // Create a new audio track
+        let audio_track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_owned(),
+                ..Default::default()
+            },
+            "audio".to_owned(),
+            "webrtc-rs".to_owned(),
+        ));
+
         // Set up track handlers
+        let track_clone = audio_track.clone();
         peer_connection.on_track(Box::new(move |track, _, _| {
+            let track_clone = track_clone.clone();
             Box::pin(async move {
                 debug!("Received track: {:?}", track);
+                
+                // Read incoming RTP packets and forward them to the local track
+                while let Ok((rtp, _)) = track.read_rtp().await {
+                    if let Err(e) = track_clone.write_rtp(&rtp).await {
+                        error!("Failed to forward RTP packet: {}", e);
+                    }
+                }
             })
         }));
 
         Ok(MediaRelay {
             peer_connection,
             peer_id,
-            audio_track: None,
+            audio_track: Some(audio_track),
             video_track: None,
             data_channel: Arc::new(Mutex::new(None)),
             ice_candidate_buffer: Arc::new(Mutex::new(Vec::new())),
