@@ -127,25 +127,50 @@ async function handleWebSocketMessage(event) {
                         setRemotePeerId(message.from_peer);
                         updateStatus(`Incoming call from ${remotePeerId}`);
                         
-                        // Only send acceptance after permissions granted
+                        // Setup peer connection first
+                        if (!peerConnection) {
+                            await setupPeerConnection();
+                        }
+
+                        // Set remote description from the offer BEFORE sending response
+                        const remoteDesc = new RTCSessionDescription({
+                            type: 'offer',
+                            sdp: message.sdp
+                        });
+                        
+                        await peerConnection.setRemoteDescription(remoteDesc);
+                        console.log("Set remote description from offer");
+
+                        // Create and set local answer
+                        const answer = await peerConnection.createAnswer();
+                        await peerConnection.setLocalDescription(answer);
+                        
+                        // Only send acceptance after we've set up the connection
                         sendSignal('CallResponse', {
                             room_id: document.getElementById('roomId').value,
                             from_peer: document.getElementById('peerId').value,
                             to_peer: remotePeerId,
                             accepted: true
                         });
-                        await setupPeerConnection();
+
+                        // Send answer
+                        sendSignal('Answer', {
+                            room_id: message.room_id,
+                            sdp: answer.sdp,
+                            from_peer: document.getElementById('peerId').value,
+                            to_peer: message.from_peer
+                        });
+
                     } catch (err) {
-                        console.error('Permission denied or error accessing media devices:', err);
-                        // Inform the caller that we can't accept
+                        console.error('Error handling call request:', err);
                         sendSignal('CallResponse', {
                             room_id: document.getElementById('roomId').value,
                             from_peer: document.getElementById('peerId').value,
                             to_peer: message.from_peer,
                             accepted: false,
-                            reason: 'Failed to access media devices'
+                            reason: 'Failed to setup connection: ' + err.message
                         });
-                        updateStatus('Failed to access camera/microphone. Please grant permissions and try again.', true);
+                        updateStatus('Failed to setup connection: ' + err.message, true);
                     }
                 }
                 break;
@@ -164,19 +189,22 @@ async function handleWebSocketMessage(event) {
                 break;
 
             case "IceCandidate":
-                if (peerConnection) {
-                    try {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate({
-                            candidate: message.candidate.candidate,
-                            sdpMid: message.candidate.sdpMid,
-                            sdpMLineIndex: message.candidate.sdpMLineIndex
-                        }));
-                        console.log('Added ICE candidate');
-                    } catch (err) {
-                        console.error('Error adding ICE candidate:', err);
-                    }
-                } else {
+                if (!peerConnection) {
                     console.warn('Received ICE candidate but no peer connection exists');
+                    iceCandidateBuffer.push(message.candidate);
+                    return;
+                }
+                
+                try {
+                    if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                        console.log('Added ICE candidate');
+                    } else {
+                        console.log('Buffering ICE candidate until remote description is set');
+                        iceCandidateBuffer.push(message.candidate);
+                    }
+                } catch (err) {
+                    console.error('Error adding ICE candidate:', err);
                 }
                 break;
 
