@@ -83,6 +83,7 @@ pub enum SignalingMessage {
         to_peer: String,
         accepted: bool,
         reason: Option<String>,
+        sdp: Option<String>,
     },
     Join {
         room_id: String,
@@ -130,6 +131,11 @@ pub enum SignalingMessage {
         room_id: String,
         peer_id: String,
     },
+    ConnectionError {
+        peer_id: String,
+        error: String,
+        should_retry: bool,
+    },
 }
 
 pub type PeerConnection = (String, Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>);
@@ -169,6 +175,19 @@ pub struct TurnCredentials {
     pub turn_port: u16,
     pub username: String,
     pub password: String,
+}
+
+impl TurnCredentials {
+    pub fn new(server: String, port: u16, secret: &str) -> Self {
+        Self {
+            stun_server: server.clone(),
+            stun_port: port,
+            turn_server: server,
+            turn_port: port,
+            username: "user".to_string(), // You might want to generate these
+            password: secret.to_string(),
+        }
+    }
 }
 
 #[derive(Clone)]

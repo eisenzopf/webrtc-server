@@ -53,10 +53,10 @@
                 <option value="relay">Force TURN Relay</option>
             </select>
         </div>
-        <button onclick="handleConnect()">Connect</button>
-        <button onclick="startCall()">Start Call</button>
-        <button onclick="endCall()">End Call</button>
-        <button onclick="disconnect()">Disconnect</button>
+        <button id="connectButton">Connect</button>
+        <button id="startCallButton">Start Call</button>
+        <button id="endCallButton">End Call</button>
+        <button id="disconnectButton">Disconnect</button>
     </div>
 
     <div class="control-panel">
@@ -80,7 +80,7 @@
         <div id="selectablePeerList" class="peer-list">
             <!-- Peers will be dynamically added here -->
         </div>
-        <button onclick="startCall()">Call Selected Peers</button>
+        <button id="callSelectedButton">Call Selected Peers</button>
     </div>
 
     <div class="status" id="connectionStatus">Not connected</div>
@@ -99,16 +99,16 @@
     <script type="module" src="js/signaling.js"></script>
     <script type="module" src="js/ui.js"></script>
     <script type="module">
-        import { connect } from './js/signaling.js';
-        window.handleConnect = connect;
-    </script>
-    <script type="module">
-        import { startCall } from './js/webrtc.js';
-        window.startCall = startCall;
-    </script>
-    <script type="module">
-        import { disconnect } from './js/signaling.js';
-        window.disconnect = disconnect;
+        import { connect, disconnect } from './js/signaling.js';
+        import { startCall, endCall } from './js/webrtc.js';
+        
+        window.addEventListener('load', () => {
+            document.getElementById('connectButton').onclick = connect;
+            document.getElementById('startCallButton').onclick = startCall;
+            document.getElementById('endCallButton').onclick = endCall;
+            document.getElementById('disconnectButton').onclick = disconnect;
+            document.getElementById('callSelectedButton').onclick = startCall;
+        });
     </script>
     <script type="module">
         import { checkMediaDevices } from './js/webrtc.js';

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Connection Monitor</title>
+    <style>
+        .connection {
+            margin: 10px;
+            padding: 10px;
+            border: 1px solid #ccc;
+        }
+        .Connected { background-color: #90EE90; }
+        .Failed { background-color: #FFB6C1; }
+        .WaitingForOffer { background-color: #FFE4B5; }
+    </style>
+</head>
+<body>
+    <h1>WebRTC Connection Monitor</h1>
+    <div id="connections"></div>
+
+    <script>
+        const ws = new WebSocket('ws://localhost:8081/api/monitoring/ws');
+        const connections = {};
+
+        ws.onmessage = (event) => {
+            const stateChange = JSON.parse(event.data);
+            updateConnection(stateChange);
+        };
+
+        function updateConnection(stateChange) {
+            let connDiv = connections[stateChange.peer_id];
+            if (!connDiv) {
+                connDiv = document.createElement('div');
+                connDiv.className = 'connection';
+                connections[stateChange.peer_id] = connDiv;
+                document.getElementById('connections').appendChild(connDiv);
+            }
+
+            connDiv.className = `connection ${stateChange.to_state}`;
+            connDiv.innerHTML = `
+                <h3>Peer: ${stateChange.peer_id}</h3>
+                <p>State: ${stateChange.to_state}</p>
+                <p>Changed at: ${new Date(stateChange.timestamp).toLocaleString()}</p>
+            `;
+        }
+    </script>
+</body>
+</html>

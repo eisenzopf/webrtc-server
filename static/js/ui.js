@@ -22,7 +22,7 @@ export function updateStatus(message, isError = false, peerConnection = null) {
     });
 }
 
-function updateCallStatus(state, peer = null) {
+export function updateCallStatus(state, peer = null) {
     const statusMsg = peer ? `${state} with ${peer}` : state;
     updateStatus(statusMsg);
     
@@ -52,6 +52,13 @@ export function handlePeerListMessage(message) {
     console.log("Updated peer list HTML");
 }
 
+export function showCallAlert(caller) {
+    return new Promise((resolve) => {
+        const result = window.confirm(`Incoming call from ${caller}. Accept?`);
+        resolve(result);
+    });
+}
+
 function toggleMute() {
     if (localStream) {
         localStream.getAudioTracks().forEach(track => {
@@ -61,13 +68,6 @@ function toggleMute() {
         isMuted = !isMuted;
         document.getElementById('muteButton').textContent = isMuted ? 'Unmute' : 'Mute';
     }
-}
-
-function showCallAlert(caller) {
-    return new Promise((resolve) => {
-        const result = window.confirm(`Incoming call from ${caller}. Accept?`);
-        resolve(result);
-    });
 }
 
 function addDebugButton() {

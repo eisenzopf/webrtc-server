@@ -24,6 +24,7 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::util::Marshal;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::track::track_local::TrackLocal;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
@@ -59,59 +60,62 @@ pub struct MediaStats {
 }
 
 impl MediaRelay {
-    pub async fn new(peer_connection: Arc<RTCPeerConnection>, peer_id: String) -> Result<Self> {
-        // Add audio transceiver with sendrecv direction
-        let tr_init = RTCRtpTransceiverInit {
-            direction: RTCRtpTransceiverDirection::Sendrecv,
-            send_encodings: vec![],
-        };
+    pub async fn new(peer_id: String) -> Result<Self> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
 
-        peer_connection.add_transceiver_from_kind(
-            RTPCodecType::Audio,
-            Some(tr_init),
-        ).await?;
+        let api = APIBuilder::new()
+            .with_media_engine(media_engine)
+            .build();
 
-        // Create a new audio track
+        let peer_connection = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
+
+        // Create audio track
         let audio_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "audio/opus".to_owned(),
                 clock_rate: 48000,
                 channels: 2,
-                sdp_fmtp_line: "".to_owned(),
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
                 ..Default::default()
             },
             "audio".to_owned(),
             "webrtc-rs".to_owned(),
         ));
 
-        // Set up track handlers
+        // Add transceiver with explicit direction
+        peer_connection.add_transceiver_from_track(
+            Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>, 
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendrecv,
+                send_encodings: vec![],
+            }),
+        ).await?;
+
+        // Set up track handlers with more detailed logging
         let track_clone = audio_track.clone();
         peer_connection.on_track(Box::new(move |track, _, _| {
             let track_clone = track_clone.clone();
             Box::pin(async move {
-                debug!("Received track: {:?}", track);
+                debug!("Received track: kind={}, id={}", track.kind(), track.id());
                 
-                // Read incoming RTP packets and forward them to the local track
                 while let Ok((rtp, _)) = track.read_rtp().await {
-                    // Convert RTP packet to bytes using marshal_to
-                    let mut buf = vec![0; 1500];  // Typical MTU size
-                    match rtp.marshal_to(&mut buf) {
-                        Ok(size) => {
-                            if let Err(e) = track_clone.write(&buf[..size]).await {
-                                error!("Failed to forward RTP packet: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to marshal RTP packet: {}", e);
-                        }
+                    debug!("Forwarding RTP packet: ssrc={}, seq={}, ts={}", 
+                        rtp.header.ssrc, 
+                        rtp.header.sequence_number,
+                        rtp.header.timestamp
+                    );
+                    if let Err(e) = track_clone.write_rtp(&rtp).await {
+                        error!("Failed to forward RTP packet: {}", e);
                     }
                 }
+                debug!("Track reading loop ended");
             })
         }));
 
         Ok(MediaRelay {
-            peer_connection,
             peer_id,
+            peer_connection,
             audio_track: Some(audio_track),
             video_track: None,
             data_channel: Arc::new(Mutex::new(None)),
@@ -196,21 +200,16 @@ impl MediaRelay {
     }
 
     pub async fn set_remote_description(&self, sdp: String) -> Result<()> {
-        let desc = RTCSessionDescription::offer(sdp)?;
+        let desc = RTCSessionDescription::answer(sdp)?;
         self.peer_connection.set_remote_description(desc).await?;
-
-        // After setting remote description, apply any buffered ICE candidates
-        let candidates = {
-            let mut buffer = self.ice_candidate_buffer.lock().await;
-            std::mem::take(&mut *buffer)
-        };
-
-        for candidate in candidates {
+        
+        // Apply any buffered candidates now that we have the remote description
+        let mut buffer = self.ice_candidate_buffer.lock().await;
+        while let Some(candidate) = buffer.pop() {
             if let Err(e) = self.peer_connection.add_ice_candidate(candidate).await {
-                error!("Failed to add buffered ICE candidate: {}", e);
+                warn!("Failed to apply buffered ICE candidate: {}", e);
             }
         }
-
         Ok(())
     }
 
@@ -273,7 +272,7 @@ impl MediaRelayManager {
         };
 
         let peer_connection = Arc::new(api.new_peer_connection(config).await?);
-        let relay = MediaRelay::new(peer_connection, peer_id.clone()).await?;
+        let relay = MediaRelay::new(peer_id.clone()).await?;
         
         let mut relays = self.relays.write().await;
         relays.insert(peer_id, relay.clone());
@@ -454,7 +453,7 @@ impl MediaRelayManager {
         };
 
         let peer_connection = Arc::new(api.new_peer_connection(config).await?);
-        let media_relay = MediaRelay::new(peer_connection, peer_id.clone()).await?;
+        let media_relay = MediaRelay::new(peer_id.clone()).await?;
 
         relays.insert(peer_id, media_relay);
         Ok(())

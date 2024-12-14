@@ -159,8 +159,20 @@ async function handleNegotiationNeeded() {
 }
 
 export async function setupPeerConnection() {
-    const config = await getIceServers();
-    peerConnection = new RTCPeerConnection(config);
+    // Get TURN credentials from server
+    const response = await fetch('/api/turn-credentials');
+    const turnConfig = await response.json();
+    
+    const configuration = {
+        iceServers: [{
+            urls: `turn:${turnConfig.turn_server}:${turnConfig.turn_port}`,
+            username: turnConfig.username,
+            credential: turnConfig.password
+        }],
+        iceTransportPolicy: 'relay' // Force TURN usage for testing
+    };
+
+    peerConnection = new RTCPeerConnection(configuration);
     
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -186,26 +198,32 @@ export async function setupPeerConnection() {
         await Promise.all(addTrackPromises);
         await new Promise(resolve => setTimeout(resolve, 200));
 
-        // Add event listeners and configure peer connection
+        // Add all event listeners
         peerConnection.ontrack = handleTrack;
-        peerConnection.onicecandidate = handleICECandidate;
-        peerConnection.onconnectionstatechange = handleConnectionStateChange;
-        
-        // Now set the negotiation handler after initial setup
-        peerConnection.onnegotiationneeded = handleNegotiationNeeded;
-        
-        // Clear any existing debug interval
-        if (debugInterval) {
-            clearInterval(debugInterval);
-        }
-        
-        // Start periodic audio debugging
-        debugInterval = setInterval(debugAudioState, 5000);
-        
-        return peerConnection;
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                console.log('Generated ICE candidate:', event.candidate);
+                sendSignal('IceCandidate', {
+                    room_id: document.getElementById('roomId').value,
+                    from_peer: document.getElementById('peerId').value,
+                    to_peer: remotePeerId,
+                    candidate: JSON.stringify(event.candidate)
+                });
+            }
+        };
+        peerConnection.onconnectionstatechange = () => {
+            console.log('Connection state:', peerConnection.connectionState);
+            handleConnectionStateChange();
+        };
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log('ICE connection state:', peerConnection.iceConnectionState);
+        };
+        peerConnection.onsignalingstatechange = () => {
+            console.log('Signaling state:', peerConnection.signalingState);
+        };
+
     } catch (err) {
-        console.error('Error getting user media:', err);
-        updateStatus('Failed to access microphone: ' + err.message, true);
+        console.error('Error setting up peer connection:', err);
         throw err;
     }
 }
@@ -241,22 +259,38 @@ function debugAudioState() {
 }
 
 function handleTrackEvent(event) {
-    console.log('Received remote track:', event.track.kind);
-    const remoteStream = event.streams[0];
+    console.log('Received remote track:', {
+        kind: event.track.kind,
+        id: event.track.id,
+        enabled: event.track.enabled,
+        muted: event.track.muted,
+        readyState: event.track.readyState
+    });
     
+    const remoteStream = event.streams[0];
     if (remoteStream) {
-        const audioElement = document.getElementById('remoteAudio');
+        const audioElement = document.getElementById('remoteAudio') || createRemoteAudio();
         if (audioElement) {
             audioElement.srcObject = remoteStream;
+            audioElement.play().catch(e => console.error('Audio play failed:', e));
             console.log('Set remote stream to audio element');
             
-            // Monitor audio levels
-            monitorAudioState(remoteStream);
-        } else {
-            console.warn('No remote audio element found');
+            // Monitor audio state
+            setInterval(() => {
+                console.log('Audio state:', {
+                    time: audioElement.currentTime,
+                    paused: audioElement.paused,
+                    muted: audioElement.muted,
+                    volume: audioElement.volume,
+                    tracks: remoteStream.getTracks().map(t => ({
+                        kind: t.kind,
+                        enabled: t.enabled,
+                        muted: t.muted,
+                        readyState: t.readyState
+                    }))
+                });
+            }, 5000);
         }
-    } else {
-        console.warn('No remote stream in track event');
     }
 }
 
@@ -392,7 +426,7 @@ export async function startCall() {
     }
 }
 
-async function cleanupExistingConnection() {
+export async function cleanupExistingConnection() {
     if (debugInterval) {
         clearInterval(debugInterval);
         debugInterval = null;
@@ -416,22 +450,30 @@ async function cleanupExistingConnection() {
     }
 }
 
-async function endCall() {
+export async function endCall() {
     try {
         if (peerConnection) {
-            peerConnection.close();
-            peerConnection = null;
-
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
-            }
-
+            // Send end call signal first
             sendSignal('EndCall', {
                 room_id: document.getElementById('roomId').value,
                 peer_id: document.getElementById('peerId').value
             });
 
+            // Then clean up the connection
+            peerConnection.close();
+            peerConnection = null;
+        
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            
+            // Reset video elements
+            const localVideo = document.getElementById('localVideo');
+            const remoteVideo = document.getElementById('remoteVideo');
+            localVideo.srcObject = null;
+            remoteVideo.srcObject = null;
+            
             updateStatus('Call ended');
             document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
         } else {

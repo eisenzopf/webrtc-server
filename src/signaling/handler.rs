@@ -168,7 +168,7 @@ impl MessageHandler {
                 }
                 Ok(())
             },
-            SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted, reason } => {
+            SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted, reason, sdp } => {
                 debug!("Handling call response from {} to {}: accepted={}", from_peer, to_peer, accepted);
                 if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
                     let message = SignalingMessage::CallResponse {
@@ -177,6 +177,7 @@ impl MessageHandler {
                         to_peer: to_peer.clone(),
                         accepted,
                         reason,
+                        sdp,
                     };
                     ws_sender.send(serde_json::to_string(&message)?).await?;
                     debug!("Forwarded call response to {}", to_peer);
