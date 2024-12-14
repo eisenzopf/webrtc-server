@@ -1,3 +1,4 @@
 pub mod error;
 
-pub use error::{Error, Result};
+pub use error::Error;
+pub type Result<T> = std::result::Result<T, Error>;

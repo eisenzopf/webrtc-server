@@ -9,28 +9,35 @@ export let remotePeerId = null;
 export let enableVideo = false;
 
 export async function getIceServers() {
-    const stunServer = document.getElementById('stunServer').value;
-    const stunPort = document.getElementById('stunPort').value;
-    const username = document.getElementById('turnUsername').value;
-    const password = document.getElementById('turnPassword').value;
-    const connectionType = document.getElementById('connectionType').value;
-
-    const iceServers = [{
-        urls: [
-            `stun:${stunServer}:${stunPort}`,
-            `turn:${stunServer}:${stunPort}`
-        ],
-        username: username,
-        credential: password
-    }];
-
-    return {
-        iceServers,
-        iceTransportPolicy: connectionType === 'relay' ? 'relay' : 'all',
-        iceCandidatePoolSize: 10,
-        bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require'
-    };
+    try {
+        const serverAddress = window.location.hostname;
+        const serverPort = window.location.port || '8080';
+        const response = await fetch(`http://${serverAddress}:${serverPort}/api/turn-credentials`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch TURN credentials');
+        }
+        const credentials = await response.json();
+        
+        const connectionType = document.getElementById('connectionType').value;
+        
+        return {
+            iceServers: [{
+                urls: [
+                    `stun:${credentials.stun_server}:${credentials.stun_port}`,
+                    `turn:${credentials.turn_server}:${credentials.turn_port}`
+                ],
+                username: credentials.username,
+                credential: credentials.password
+            }],
+            iceTransportPolicy: connectionType === 'relay' ? 'relay' : 'all',
+            iceCandidatePoolSize: 10,
+            bundlePolicy: 'max-bundle',
+            rtcpMuxPolicy: 'require'
+        };
+    } catch (err) {
+        console.error('Error getting ICE servers:', err);
+        throw new Error('Failed to fetch TURN credentials');
+    }
 }
 
 export function handleTrack(event) {
@@ -308,29 +315,59 @@ function extractIceCandidates(sdp) {
     return candidates;
 }
 
-async function checkMediaDevices() {
+export async function checkMediaDevices() {
     try {
+        // First check if mediaDevices API is available
+        if (!navigator.mediaDevices) {
+            console.warn('MediaDevices API not available');
+            const mediaControls = document.getElementById('mediaControls');
+            if (mediaControls) {
+                mediaControls.style.display = 'none';
+            }
+            
+            // Check common issues
+            if (window.location.protocol === 'file:') {
+                throw new Error('Media devices cannot be accessed when loading from a file. Please serve the page through a web server.');
+            } else if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+                throw new Error('Media devices require a secure connection (HTTPS) or localhost');
+            } else {
+                throw new Error('MediaDevices API is not supported in this browser');
+            }
+        }
+
         const devices = await navigator.mediaDevices.enumerateDevices();
-        hasCamera = devices.some(device => device.kind === 'videoinput');
+        const hasCamera = devices.some(device => device.kind === 'videoinput');
         
         const mediaControls = document.getElementById('mediaControls');
         const enableVideoCheckbox = document.getElementById('enableVideo');
         
-        if (hasCamera) {
+        if (mediaControls) {
             mediaControls.style.display = 'block';
+        }
+        
+        if (enableVideoCheckbox) {
             enableVideoCheckbox.checked = false;
             enableVideoCheckbox.onchange = (e) => {
-                enableVideo = e.target.checked;
-                // If we're already in a call, we need to renegotiate
-                if (peerConnection && peerConnection.connectionState === 'connected') {
-                    renegotiateMedia();
+                const enableVideo = e.target.checked;
+                if (window.peerConnection && window.peerConnection.connectionState === 'connected') {
+                    // Ensure renegotiateMedia is defined
+                    if (typeof window.renegotiateMedia === 'function') {
+                        window.renegotiateMedia();
+                    }
                 }
             };
-        } else {
-            mediaControls.style.display = 'none';
         }
+
+        return hasCamera;
     } catch (err) {
         console.error('Error checking media devices:', err);
+        // Show a more user-friendly error message in the UI
+        const audioStatus = document.getElementById('audioStatus');
+        if (audioStatus) {
+            audioStatus.textContent = `Media Error: ${err.message}`;
+            audioStatus.style.color = 'red';
+        }
+        throw err;
     }
 }
 

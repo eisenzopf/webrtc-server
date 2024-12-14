@@ -19,46 +19,58 @@ use webrtc::track::track_remote::TrackRemote;
 use std::time::SystemTime;
 use crate::utils::{Error, Result};
 use futures_util::SinkExt;
+use warp::ws::WebSocket;
 
 // Re-export room types
 pub use crate::room::state::{Room, MediaSettings, MediaType};
 
 // Define WebSocketSender type
-pub type WebSocketSender = SplitSink<WebSocketStream<TcpStream>, Message>;
+pub type TungsteniteWebSocketSender = SplitSink<WebSocketStream<TcpStream>, Message>;
+pub type WarpWebSocketSender = SplitSink<WebSocket, warp::ws::Message>;
+
+// Create an enum to handle both types
+#[derive(Debug, Clone)]
+pub enum WebSocketSenderType {
+    Tungstenite(Arc<Mutex<TungsteniteWebSocketSender>>),
+    Warp(Arc<Mutex<WarpWebSocketSender>>),
+}
 
 #[derive(Debug, Clone)]
 pub struct WebSocketConnection {
-    sender: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>,
+    sender: WebSocketSenderType,
 }
 
 impl WebSocketConnection {
-    pub fn new(sender: WebSocketSender) -> Self {
+    pub fn new_tungstenite(sender: Arc<Mutex<TungsteniteWebSocketSender>>) -> Self {
         Self {
-            sender: Arc::new(Mutex::new(sender))
+            sender: WebSocketSenderType::Tungstenite(sender),
         }
     }
 
-    pub async fn send(&self, message: Message) -> Result<()> {
-        let mut sender = self.sender.lock().await;
-        sender.send(message).await.map_err(|e| Error::WebSocketError(e.to_string()))?;
+    pub fn new_warp(sender: Arc<Mutex<WarpWebSocketSender>>) -> Self {
+        Self {
+            sender: WebSocketSenderType::Warp(sender),
+        }
+    }
+
+    pub async fn send(&self, text: String) -> Result<()> {
+        match &self.sender {
+            WebSocketSenderType::Tungstenite(sender) => {
+                let mut sender = sender.lock().await;
+                sender.send(Message::Text(text)).await.map_err(|e| Error::WebSocketError(e.to_string()))?;
+            }
+            WebSocketSenderType::Warp(sender) => {
+                let mut sender = sender.lock().await;
+                sender.send(warp::ws::Message::text(text)).await.map_err(|e| Error::WebSocketError(e.to_string()))?;
+            }
+        }
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "message_type")]
 pub enum SignalingMessage {
-    Join {
-        room_id: String,
-        peer_id: String,
-    },
-    RequestPeerList {
-        room_id: String,
-    },
-    PeerList {
-        room_id: String,
-        peers: Vec<String>,
-    },
     CallRequest {
         room_id: String,
         from_peer: String,
@@ -71,6 +83,17 @@ pub enum SignalingMessage {
         to_peer: String,
         accepted: bool,
         reason: Option<String>,
+    },
+    Join {
+        room_id: String,
+        peer_id: String,
+    },
+    RequestPeerList {
+        room_id: String,
+    },
+    PeerList {
+        room_id: String,
+        peers: Vec<String>,
     },
     Disconnect {
         room_id: String,
@@ -136,4 +159,25 @@ pub struct CallMetadata {
     pub end_time: Option<SystemTime>,
     pub participants: Vec<String>,
     pub recording_path: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct TurnCredentials {
+    pub stun_server: String,
+    pub stun_port: u16,
+    pub turn_server: String,
+    pub turn_port: u16,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Clone)]
+pub struct ServerConfig {
+    pub stun_server: String,
+    pub stun_port: u16,
+    pub turn_server: String,
+    pub turn_port: u16,
+    pub turn_username: String,
+    pub turn_password: String,
+    pub ws_port: u16,
 }

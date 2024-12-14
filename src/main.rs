@@ -15,6 +15,59 @@ use webrtc_server::signaling::turn::TurnServer;
 use webrtc_server::room::manager::RoomManager;
 use tokio::sync::Mutex;
 use webrtc_server::types::WebSocketConnection;
+use warp::Filter;
+use warp::fs;
+use serde::Serialize;
+use webrtc_server::signaling::server::ServerConfig;
+use warp::cors::CorsForbidden;
+
+#[derive(Serialize)]
+struct TurnCredentials {
+    stun_server: String,
+    stun_port: u16,
+    turn_server: String,
+    turn_port: u16,
+    username: String,
+    password: String,
+}
+
+async fn start_server() -> Result<()> {
+    let config = ServerConfig {
+        stun_server: "192.168.1.68".to_string(),
+        stun_port: 3478,
+        turn_server: "192.168.1.68".to_string(),
+        turn_port: 3478,
+        turn_username: "testuser".to_string(),
+        turn_password: "testpass".to_string(),
+        ws_port: 8080,
+    };
+
+    let signaling_server = SignalingServer::new(config).await?;
+    
+    let ws_route = signaling_server.ws_route();
+    let credentials_route = signaling_server.turn_credentials_route();
+    
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_methods(vec!["GET", "POST", "OPTIONS"])
+        .allow_headers(vec!["content-type", "upgrade", "connection"])
+        .allow_credentials(true)
+        .max_age(3600);
+
+    let static_files = warp::path("static")
+        .and(warp::fs::dir("static"));
+
+    let routes = ws_route
+        .or(credentials_route)
+        .or(static_files)
+        .with(cors);
+    
+    warp::serve(routes)
+        .run(([0, 0, 0, 0], signaling_server.config.ws_port))
+        .await;
+    
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,85 +82,24 @@ async fn main() -> Result<()> {
         "webrtc.rs",     // Realm
         vec![
             ("testuser".to_string(), "testpass".to_string()),
-            // Add more credentials as needed
         ],
     ).await?;
 
-    // Create MediaRelayManager
-    let media_relay = Arc::new(MediaRelayManager::new(
-        "192.168.1.68".to_string(),  // STUN server IP
-        3478,                        // STUN port
-        "192.168.1.68".to_string(),  // TURN server IP
-        3478,                        // TURN port
-        "testuser".to_string(),      // TURN username
-        "testpass".to_string(),      // TURN password
-    ));
-
-    // Create MessageHandler
-    let handler = Arc::new(MessageHandler::new(
-        media_relay.clone(),
-    ));
-
-    // Create SignalingServer with the handler
-    let server = SignalingServer::new(handler);
-
-    // Start the cleanup task
-    let cleanup_manager = media_relay.clone();
-    tokio::spawn(async move {
-        cleanup_manager.cleanup_stale_relays().await;
+    // Start debug server
+    info!("Starting debug server on port 8081...");
+    let debug_handle = tokio::spawn(async {
+        run_debug_server(Arc::new(MediaRelayManager::new(
+            "192.168.1.68".to_string(),
+            3478,
+            "192.168.1.68".to_string(),
+            3478,
+            "testuser".to_string(),
+            "testpass".to_string(),
+        ))).await;
     });
 
-    // Start the monitoring task
-    let monitor_manager = media_relay.clone();
-    tokio::spawn(async move {
-        monitor_manager.monitor_relays().await;
-    });
+    // Start the main server
+    start_server().await?;
 
-    // Start debug server in a separate task
-    let debug_relay = media_relay.clone();
-    let debug_handle = tokio::spawn(async move {
-        info!("Starting debug server...");
-        run_debug_server(debug_relay).await;
-    });
-
-    // Create shutdown signal handler
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let shutdown_tx_clone = shutdown_tx.clone();
-
-    // Handle Ctrl+C
-    tokio::spawn(async move {
-        match signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Received shutdown signal, initiating graceful shutdown...");
-                shutdown_tx_clone.send(()).unwrap_or_else(|e| {
-                    error!("Failed to send shutdown signal: {}", e);
-                    0
-                });
-            }
-            Err(err) => {
-                error!("Failed to listen for shutdown signal: {}", err);
-            }
-        }
-    });
-
-    // Run the main WebSocket server with shutdown handling
-    select! {
-        result = server.run() => {
-            if let Err(e) = result {
-                error!("Server error: {}", e);
-            }
-        }
-        _ = shutdown_rx.recv() => {
-            info!("Shutting down server...");
-            if let Err(e) = turn_server.close().await {
-                error!("Error shutting down TURN server: {}", e);
-            }
-        }
-    }
-
-    // Clean up monitoring tasks
-    debug_handle.abort();
-
-    info!("Server shutdown complete");
     Ok(())
 }

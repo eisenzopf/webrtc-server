@@ -1,7 +1,7 @@
 use crate::utils::{Error, Result};
 use crate::room::Room;
 use crate::metrics::ConnectionMetrics;
-use crate::types::{SignalingMessage, WebSocketSender, WebSocketConnection};
+use crate::types::{SignalingMessage, WebSocketConnection};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use std::collections::HashMap;
@@ -26,6 +26,7 @@ use webrtc::{
 };
 use crate::media::{MediaRelayManager, MediaRelay};
 use log::{info, error, debug, warn};
+use serde::{Serialize, Deserialize};
 
 pub struct MessageHandler {
     relay_manager: Arc<MediaRelayManager>,
@@ -110,7 +111,7 @@ impl MessageHandler {
         let senders = self.websocket_senders.read().await;
         
         for ws_conn in senders.values() {
-            if let Err(e) = ws_conn.send(Message::Text(json.clone())).await {
+            if let Err(e) = ws_conn.send(json.clone()).await {
                 warn!("Failed to send message to peer: {}", e);
             }
         }
@@ -123,26 +124,52 @@ impl MessageHandler {
         Ok(())
     }
 
-    pub async fn handle_message(&self, message: SignalingMessage) -> Result<()> {
-        match message {
+    pub async fn handle_message(&self, msg: SignalingMessage, peer_id: &str) -> Result<()> {
+        match msg {
+            SignalingMessage::CallRequest { room_id, from_peer, to_peers, sdp } => {
+                debug!("Handling call request from {} to {:?}", from_peer, to_peers);
+                // Forward the call request to each target peer
+                for to_peer in to_peers {
+                    if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
+                        let message = SignalingMessage::CallRequest {
+                            room_id: room_id.clone(),
+                            from_peer: from_peer.clone(),
+                            to_peers: vec![to_peer.clone()],
+                            sdp: sdp.clone(),
+                        };
+                        ws_sender.send(serde_json::to_string(&message)?).await?;
+                        debug!("Forwarded call request to {}", to_peer);
+                    }
+                }
+                Ok(())
+            },
+            SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted, reason } => {
+                debug!("Handling call response from {} to {}: accepted={}", from_peer, to_peer, accepted);
+                if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
+                    let message = SignalingMessage::CallResponse {
+                        room_id,
+                        from_peer,
+                        to_peer: to_peer.clone(),
+                        accepted,
+                        reason,
+                    };
+                    ws_sender.send(serde_json::to_string(&message)?).await?;
+                    debug!("Forwarded call response to {}", to_peer);
+                }
+                Ok(())
+            },
             SignalingMessage::Join { room_id, peer_id } => {
                 self.handle_join(room_id, peer_id).await
-            }
+            },
             SignalingMessage::RequestPeerList { room_id } => {
                 self.handle_peer_list_request(room_id).await
-            }
-            SignalingMessage::CallRequest { room_id, from_peer, to_peers, sdp } => {
-                self.handle_call_request(room_id, from_peer, to_peers, sdp).await
-            }
-            SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted, reason } => {
-                self.handle_call_response(room_id, from_peer, to_peer, accepted, reason).await
-            }
+            },
             SignalingMessage::Offer { room_id, sdp, from_peer, to_peer } => {
                 self.handle_offer(room_id, from_peer, to_peer, sdp).await
-            }
+            },
             SignalingMessage::IceCandidate { room_id, candidate, from_peer, to_peer } => {
                 self.handle_ice_candidate(room_id, from_peer, to_peer, candidate).await
-            }
+            },
             _ => Ok(()),
         }
     }
@@ -196,56 +223,9 @@ impl MessageHandler {
         let senders = self.websocket_senders.read().await;
         
         for ws_conn in senders.values() {
-            if let Err(e) = ws_conn.send(Message::Text(json.clone())).await {
+            if let Err(e) = ws_conn.send(json.clone()).await {
                 warn!("Failed to send message to peer: {}", e);
             }
-        }
-        Ok(())
-    }
-
-    pub async fn handle_call_request(
-        &self,
-        room_id: String,
-        from_peer: String,
-        to_peers: Vec<String>,
-        sdp: String,
-    ) -> Result<()> {
-        debug!("Handling call request from {} to {:?}", from_peer, to_peers);
-        // Forward the call request to each target peer
-        for to_peer in to_peers {
-            if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
-                let message = SignalingMessage::CallRequest {
-                    room_id: room_id.clone(),
-                    from_peer: from_peer.clone(),
-                    to_peers: vec![to_peer.clone()],
-                    sdp: sdp.clone(),
-                };
-                ws_sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
-                debug!("Forwarded call request to {}", to_peer);
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn handle_call_response(
-        &self,
-        room_id: String,
-        from_peer: String,
-        to_peer: String,
-        accepted: bool,
-        reason: Option<String>,
-    ) -> Result<()> {
-        debug!("Handling call response from {} to {}: accepted={}", from_peer, to_peer, accepted);
-        if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
-            let message = SignalingMessage::CallResponse {
-                room_id,
-                from_peer,
-                to_peer: to_peer.clone(),
-                accepted,
-                reason,
-            };
-            ws_sender.send(Message::Text(serde_json::to_string(&message)?)).await?;
-            debug!("Forwarded call response to {}", to_peer);
         }
         Ok(())
     }

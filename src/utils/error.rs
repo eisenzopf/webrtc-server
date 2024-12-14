@@ -20,6 +20,7 @@ pub enum Error {
     IO(String),
     Turn(String),
     AddrParse(String),
+    WarpError(String),
 }
 
 impl fmt::Display for Error {
@@ -36,9 +37,12 @@ impl fmt::Display for Error {
             Error::IO(msg) => write!(f, "IO error: {}", msg),
             Error::Turn(msg) => write!(f, "TURN error: {}", msg),
             Error::AddrParse(msg) => write!(f, "Address parse error: {}", msg),
+            Error::WarpError(msg) => write!(f, "Warp error: {}", msg),
         }
     }
 }
+
+impl StdError for Error {}
 
 impl From<WebRTCError> for Error {
     fn from(err: WebRTCError) -> Self {
@@ -76,6 +80,10 @@ impl From<AddrParseError> for Error {
     }
 }
 
-impl StdError for Error {}
+impl From<warp::Error> for Error {
+    fn from(err: warp::Error) -> Self {
+        Error::WarpError(err.to_string())
+    }
+}
 
 pub type Result<T> = std::result::Result<T, Error>; 

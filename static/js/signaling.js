@@ -40,10 +40,11 @@ export async function connect() {
             console.log('Generated peer ID:', peerIdInput.value);
         }
 
-        const serverAddress = document.getElementById('stunServer').value;
-        console.log(`Attempting connection to WebSocket server: ws://${serverAddress}:8080`);
+        const serverAddress = window.location.hostname;
+        const serverPort = window.location.port || '8080';
+        console.log(`Attempting connection to WebSocket server: ws://${serverAddress}:${serverPort}`);
         
-        ws = new WebSocket(`ws://${serverAddress}:8080`);
+        ws = new WebSocket(`ws://${serverAddress}:${serverPort}`);
         
         ws.onopen = () => {
             console.log('WebSocket connected successfully');

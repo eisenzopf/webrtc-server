@@ -1,6 +1,6 @@
 use crate::utils::{Error, Result};
 use crate::signaling::handler::MessageHandler;
-use crate::types::{SignalingMessage, WebSocketSender, WebSocketConnection};
+use crate::types::{SignalingMessage, WebSocketConnection, TurnCredentials};
 use tokio::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use tokio_tungstenite::{accept_async, WebSocketStream};
@@ -15,19 +15,41 @@ use warp::reject;
 use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use tokio_tungstenite::tungstenite::Message;
+use serde::Serialize;
 
 pub struct SignalingServer {
-    address: String,
-    handler: Arc<MessageHandler>,
+    pub address: String,
+    pub handler: Arc<MessageHandler>,
+    pub config: ServerConfig,
+}
+
+#[derive(Clone)]
+pub struct ServerConfig {
+    pub stun_server: String,
+    pub stun_port: u16,
+    pub turn_server: String,
+    pub turn_port: u16,
+    pub turn_username: String,
+    pub turn_password: String,
+    pub ws_port: u16,
 }
 
 impl SignalingServer {
-    pub fn new(handler: Arc<MessageHandler>) -> Self {
-        info!("Creating new SignalingServer instance");
-        Self {
-            address: "0.0.0.0:8080".to_string(),
-            handler,
-        }
+    pub async fn new(config: ServerConfig) -> Result<Self> {
+        let relay_manager = Arc::new(MediaRelayManager::new(
+            config.stun_server.clone(),
+            config.stun_port,
+            config.turn_server.clone(),
+            config.turn_port,
+            config.turn_username.clone(),
+            config.turn_password.clone(),
+        ));
+
+        Ok(SignalingServer {
+            address: format!("0.0.0.0:{}", config.ws_port),
+            handler: Arc::new(MessageHandler::new(relay_manager)),
+            config,
+        })
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -58,28 +80,120 @@ impl SignalingServer {
         handler: Arc<MessageHandler>,
     ) -> Result<()> {
         let (ws_sender, mut ws_receiver) = ws_stream.split();
-        let ws_conn = WebSocketConnection::new(ws_sender);
+        let ws_sender = Arc::new(Mutex::new(ws_sender));
+        let ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
         
         // We'll store this connection temporarily until we get the Join message
         let temp_id = format!("temp_{}", addr);
-        handler.set_websocket_sender(temp_id.clone(), ws_conn.clone()).await?;
+        handler.set_websocket_sender(temp_id.clone(), ws_conn).await?;
 
         while let Some(msg) = ws_receiver.next().await {
             let msg = msg?;
             if let Message::Text(text) = msg {
                 let message: SignalingMessage = serde_json::from_str(&text)?;
                 
-                // If this is a Join message, update the WebSocket sender with the real peer_id
-                if let SignalingMessage::Join { peer_id, .. } = &message {
-                    handler.set_websocket_sender(peer_id.clone(), ws_conn.clone()).await?;
-                    // Remove temporary connection
-                    handler.remove_websocket_sender(&temp_id).await?;
+                match message.clone() {  // Clone the message to avoid ownership issues
+                    SignalingMessage::Join { peer_id, .. } => {
+                        let new_ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
+                        handler.set_websocket_sender(peer_id.clone(), new_ws_conn).await?;
+                        // Remove temporary connection
+                        handler.remove_websocket_sender(&temp_id).await?;
+                        handler.handle_message(message, &peer_id).await?;
+                    },
+                    _ => {
+                        handler.handle_message(message, &temp_id).await?;
+                    }
                 }
-                
-                handler.handle_message(message).await?;
             }
         }
         Ok(())
+    }
+
+    pub fn turn_credentials_route(&self) -> impl Filter<Extract = impl Reply, Error = warp::Rejection> + Clone {
+        let credentials = TurnCredentials {
+            stun_server: self.config.stun_server.clone(),
+            stun_port: self.config.stun_port,
+            turn_server: self.config.turn_server.clone(),
+            turn_port: self.config.turn_port,
+            username: self.config.turn_username.clone(),
+            password: self.config.turn_password.clone(),
+        };
+        
+        warp::path!("api" / "turn-credentials")
+            .and(warp::get())
+            .map(move || {
+                warp::reply::json(&credentials)
+            })
+    }
+
+    pub fn ws_route(&self) -> impl Filter<Extract = impl Reply, Error = warp::Rejection> + Clone {
+        let handler = self.handler.clone();
+        
+        warp::ws()
+            .and(warp::addr::remote())
+            .map(move |ws: warp::ws::Ws, addr: Option<SocketAddr>| {
+                let handler = handler.clone();
+                let addr = addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+                
+                ws.on_upgrade(move |websocket| async move {
+                    let (ws_sender, mut ws_receiver) = websocket.split();
+                    let ws_sender = Arc::new(Mutex::new(ws_sender));
+                    let ws_conn = WebSocketConnection::new_warp(ws_sender.clone());
+                    
+                    // Generate a temporary ID for the connection
+                    let temp_id = format!("temp_{}", addr);
+                    if let Err(e) = handler.set_websocket_sender(temp_id.clone(), ws_conn).await {
+                        error!("Failed to set websocket sender: {}", e);
+                        return;
+                    }
+                    
+                    info!("New WebSocket connection from: {}", addr);
+
+                    while let Some(result) = ws_receiver.next().await {
+                        match result {
+                            Ok(msg) => {
+                                if let Ok(text) = msg.to_str() {
+                                    match serde_json::from_str::<SignalingMessage>(text) {
+                                        Ok(message) => {
+                                            let message_clone = message.clone();
+                                            match message {
+                                                SignalingMessage::Join { peer_id, .. } => {
+                                                    let new_ws_conn = WebSocketConnection::new_warp(ws_sender.clone());
+                                                    if let Err(e) = handler.set_websocket_sender(peer_id.clone(), new_ws_conn).await {
+                                                        error!("Failed to set websocket sender for peer {}: {}", peer_id, e);
+                                                        continue;
+                                                    }
+                                                    if let Err(e) = handler.remove_websocket_sender(&temp_id).await {
+                                                        error!("Failed to remove temporary connection: {}", e);
+                                                    }
+                                                    if let Err(e) = handler.handle_message(message_clone, &peer_id).await {
+                                                        error!("Failed to handle join message: {}", e);
+                                                    }
+                                                },
+                                                _ => {
+                                                    if let Err(e) = handler.handle_message(message_clone, &temp_id).await {
+                                                        error!("Failed to handle message: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => error!("Failed to parse message: {}", e),
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("WebSocket error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Clean up when the connection is closed
+                    if let Err(e) = handler.remove_websocket_sender(&temp_id).await {
+                        error!("Failed to remove websocket sender: {}", e);
+                    }
+                })
+            })
     }
 }
 
@@ -133,4 +247,41 @@ fn with_media_relay(
     media_relay: Arc<MediaRelayManager>,
 ) -> impl Filter<Extract = (Arc<MediaRelayManager>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || media_relay.clone())
+} 
+
+async fn handle_websocket_connection(
+    ws_stream: WebSocketStream<TcpStream>,
+    handler: Arc<MessageHandler>,
+    addr: SocketAddr,
+) -> Result<()> {
+    let (ws_sender, mut ws_receiver) = ws_stream.split();
+    let ws_sender = Arc::new(Mutex::new(ws_sender));
+    let ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
+    
+    // Generate a temporary ID for the connection
+    let temp_id = format!("temp_{}", addr);
+    handler.set_websocket_sender(temp_id.clone(), ws_conn).await?;
+    
+    info!("New connection from: {}", addr);
+
+    while let Some(msg) = ws_receiver.next().await {
+        let msg = msg?;
+        if let Message::Text(text) = msg {
+            let message: SignalingMessage = serde_json::from_str(&text)?;
+            
+            match message.clone() {  // Clone the message to avoid ownership issues
+                SignalingMessage::Join { peer_id, .. } => {
+                    // Update connection with real peer ID
+                    let new_ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
+                    handler.set_websocket_sender(peer_id.clone(), new_ws_conn).await?;
+                    handler.remove_websocket_sender(&temp_id).await?;
+                    handler.handle_message(message, &peer_id).await?;
+                },
+                _ => {
+                    handler.handle_message(message, &temp_id).await?;
+                }
+            }
+        }
+    }
+    Ok(())
 } 
