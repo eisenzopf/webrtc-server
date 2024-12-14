@@ -20,7 +20,8 @@ use bytes::Bytes;
 use tokio::sync::Mutex;
 use log::{debug, info, warn, error};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::track::track_local::track_local_static_rtp::RTCRtpCodecCapability;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::track::track_local::TrackLocalWriter;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
@@ -65,13 +66,16 @@ impl MediaRelay {
 
         peer_connection.add_transceiver_from_kind(
             RTPCodecType::Audio,
-            Some(tr_init.clone()),
+            Some(tr_init),
         ).await?;
 
         // Create a new audio track
         let audio_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "audio/opus".to_owned(),
+                clock_rate: 48000,
+                channels: 2,
+                sdp_fmtp_line: "".to_owned(),
                 ..Default::default()
             },
             "audio".to_owned(),
@@ -87,7 +91,14 @@ impl MediaRelay {
                 
                 // Read incoming RTP packets and forward them to the local track
                 while let Ok((rtp, _)) = track.read_rtp().await {
-                    if let Err(e) = track_clone.write_rtp(&rtp).await {
+                    // Convert RTP packet to bytes
+                    let mut buf = Vec::new();
+                    if let Err(e) = rtp.marshal(&mut buf) {
+                        error!("Failed to marshal RTP packet: {}", e);
+                        return;
+                    }
+                    
+                    if let Err(e) = track_clone.write(&buf).await {
                         error!("Failed to forward RTP packet: {}", e);
                     }
                 }
