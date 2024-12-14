@@ -23,7 +23,7 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::util::Marshal;
-use webrtc::peer_connection::RTCSessionDescription;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
