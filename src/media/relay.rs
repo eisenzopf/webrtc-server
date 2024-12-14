@@ -97,13 +97,18 @@ impl MediaRelay {
         peer_connection.on_track(Box::new(move |track, _, _| {
             let track_clone = track_clone.clone();
             Box::pin(async move {
-                debug!("Received track: kind={}, id={}", track.kind(), track.id());
+                debug!("Received track: kind={}, id={}, payload_type={}", 
+                    track.kind(), 
+                    track.id(),
+                    track.payload_type()
+                );
                 
                 while let Ok((rtp, _)) = track.read_rtp().await {
-                    debug!("Forwarding RTP packet: ssrc={}, seq={}, ts={}", 
+                    debug!("Forwarding RTP packet: ssrc={}, seq={}, ts={}, payload_size={}", 
                         rtp.header.ssrc, 
                         rtp.header.sequence_number,
-                        rtp.header.timestamp
+                        rtp.header.timestamp,
+                        rtp.payload.len()
                     );
                     if let Err(e) = track_clone.write_rtp(&rtp).await {
                         error!("Failed to forward RTP packet: {}", e);

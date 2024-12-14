@@ -45,33 +45,15 @@ export async function getIceServers() {
     }
 }
 
-export function handleTrack(event) {
-    console.log('Received track from server:', event.track.kind);
-    
-    if (event.track.kind === 'audio') {
-        const audioElement = document.getElementById('remoteAudio') || createRemoteAudio();
-        if (!audioElement.srcObject) {
-            audioElement.srcObject = new MediaStream();
-        }
-        audioElement.srcObject.addTrack(event.track);
-    } else if (event.track.kind === 'video') {
-        const videoElement = document.getElementById('remoteVideo');
-        if (!videoElement.srcObject) {
-            videoElement.srcObject = new MediaStream();
-        }
-        videoElement.srcObject.addTrack(event.track);
-        videoElement.style.display = 'block';
-        console.log('Added video track to remote video element');
-    }
-}
-
 function createRemoteAudio() {
     const audioElement = document.createElement('audio');
     audioElement.id = 'remoteAudio';
     audioElement.autoplay = true;
+    audioElement.controls = true;
+    audioElement.volume = 1.0;
     audioElement.playsinline = true;
     document.body.appendChild(audioElement);
-    console.log('Created new remote audio element');
+    console.log('Created new remote audio element with controls');
     return audioElement;
 }
 
@@ -199,7 +181,7 @@ export async function setupPeerConnection() {
         await new Promise(resolve => setTimeout(resolve, 200));
 
         // Add all event listeners
-        peerConnection.ontrack = handleTrack;
+        peerConnection.ontrack = handleTrackEvent;
         peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
                 console.log('Generated ICE candidate:', event.candidate);
@@ -274,6 +256,21 @@ function handleTrackEvent(event) {
             audioElement.srcObject = remoteStream;
             audioElement.play().catch(e => console.error('Audio play failed:', e));
             console.log('Set remote stream to audio element');
+            
+            // Add audio level monitoring
+            const audioContext = new AudioContext();
+            const source = audioContext.createMediaStreamSource(remoteStream);
+            const analyser = audioContext.createAnalyser();
+            source.connect(analyser);
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            setInterval(() => {
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                console.log('Audio level:', average);
+                updateAudioMeter(average);
+            }, 100);
             
             // Monitor audio state
             setInterval(() => {
@@ -703,4 +700,33 @@ export function setRemotePeerId(peerId) {
 
 export function setLocalStream(stream) {
     localStream = stream;
+}
+
+// Add these functions at the top level
+function testAudioOutput() {
+    const audioContext = new AudioContext();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    oscillator.frequency.value = 440; // A4 note
+    gainNode.gain.value = 0.1;       // 10% volume
+    
+    oscillator.start();
+    setTimeout(() => oscillator.stop(), 1000);
+}
+
+// Export the test function
+export { testAudioOutput };
+
+// Add this function
+function updateAudioMeter(level) {
+    const meterFill = document.getElementById('audioMeterFill');
+    if (meterFill) {
+        // Convert level to percentage (assuming max level is 100)
+        const percentage = Math.min(100, level * 2);
+        meterFill.style.width = `${percentage}%`;
+    }
 }

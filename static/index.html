@@ -63,12 +63,13 @@
         <h3>Audio Controls</h3>
         <div class="control-panel">
             <h3>Media Controls</h3>
-            <div id="mediaControls" style="display: none">
+            <div id="mediaControls">
                 <div>
                     <input type="checkbox" id="enableVideo">
                     <label for="enableVideo">Enable Video</label>
                 </div>
                 <button onclick="toggleMute()" id="muteButton">Mute Audio</button>
+                <button onclick="window.testAudio()" id="testAudioButton">Test Audio</button>
             </div>
         </div>
         <div class="status" id="audioStatus">Audio status: Not connected</div>
@@ -95,12 +96,16 @@
         <video id="remoteVideo" autoplay playsinline></video>
     </div>
 
+    <div class="audio-meter">
+        <div id="audioMeterFill" class="audio-meter-fill" style="width: 0%"></div>
+    </div>
+
     <script type="module" src="js/webrtc.js"></script>
     <script type="module" src="js/signaling.js"></script>
     <script type="module" src="js/ui.js"></script>
     <script type="module">
         import { connect, disconnect } from './js/signaling.js';
-        import { startCall, endCall } from './js/webrtc.js';
+        import { startCall, endCall, testAudioOutput } from './js/webrtc.js';
         
         window.addEventListener('load', () => {
             document.getElementById('connectButton').onclick = connect;
@@ -108,6 +113,9 @@
             document.getElementById('endCallButton').onclick = endCall;
             document.getElementById('disconnectButton').onclick = disconnect;
             document.getElementById('callSelectedButton').onclick = startCall;
+            
+            // Add the test audio function to the window object
+            window.testAudio = testAudioOutput;
         });
     </script>
     <script type="module">
