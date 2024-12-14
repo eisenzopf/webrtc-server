@@ -9,6 +9,10 @@ export let remotePeerId = null;
 export let enableVideo = false;
 export let isInitiator = false;
 
+// Add at the top of the file with other variables
+let debugInterval = null;
+let isNegotiating = false;
+
 export async function getIceServers() {
     try {
         const serverAddress = window.location.hostname;
@@ -61,6 +65,80 @@ export function handleTrack(event) {
     }
 }
 
+function handleICECandidate(event) {
+    if (event.candidate) {
+        console.log('Generated ICE candidate:', event.candidate);
+        
+        sendSignal('IceCandidate', {
+            room_id: document.getElementById('roomId').value,
+            from_peer: document.getElementById('peerId').value,
+            to_peer: remotePeerId,
+            candidate: event.candidate
+        });
+    }
+}
+
+async function handleNegotiationNeeded() {
+    try {
+        if (!peerConnection || peerConnection.signalingState !== "stable") {
+            console.log("Skipping negotiation - not in stable state or no connection");
+            return;
+        }
+
+        // Prevent multiple negotiations at once
+        if (isNegotiating) {
+            console.log("Already negotiating - skipping");
+            return;
+        }
+        
+        isNegotiating = true;
+        
+        try {
+            console.log("Creating offer as negotiation is needed");
+            const offer = await peerConnection.createOffer({
+                // Add offerToReceiveAudio and offerToReceiveVideo options
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: enableVideo
+            });
+            
+            // Ensure consistent m-line ordering in SDP
+            const modifiedSdp = offer.sdp.split('\r\n').map(line => {
+                // Keep audio m-line first, followed by video
+                if (line.startsWith('m=')) {
+                    return line.startsWith('m=audio') ? line : null;
+                }
+                return line;
+            }).filter(Boolean).join('\r\n');
+            
+            offer.sdp = modifiedSdp;
+            
+            // Double-check signaling state before setting local description
+            if (peerConnection.signalingState === "stable") {
+                // Wait for any pending operations
+                await new Promise(resolve => setTimeout(resolve, 0));
+                
+                await peerConnection.setLocalDescription(offer);
+                console.log("Set local description successfully");
+
+                sendSignal('Offer', {
+                    room_id: document.getElementById('roomId').value,
+                    from_peer: document.getElementById('peerId').value,
+                    to_peer: remotePeerId,
+                    sdp: peerConnection.localDescription.sdp
+                });
+            } else {
+                console.log("Signaling state changed during negotiation, aborting");
+            }
+        } finally {
+            isNegotiating = false;
+        }
+    } catch (err) {
+        console.error('Error during negotiation:', err);
+        updateStatus('Failed to negotiate connection: ' + err.message, true);
+        isNegotiating = false;
+    }
+}
+
 export async function setupPeerConnection() {
     const config = await getIceServers();
     peerConnection = new RTCPeerConnection(config);
@@ -76,38 +154,71 @@ export async function setupPeerConnection() {
         });
         
         setLocalStream(stream);
-        stream.getTracks().forEach(track => {
+        
+        // Prevent negotiation during initial setup
+        peerConnection.onnegotiationneeded = null;
+        
+        // Add tracks and wait for them to be fully processed
+        const addTrackPromises = stream.getTracks().map(track => {
             console.log('Adding track to peer connection:', track.kind);
-            peerConnection.addTrack(track, stream);
+            return peerConnection.addTrack(track, stream);
         });
+        
+        await Promise.all(addTrackPromises);
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+        // Add event listeners and configure peer connection
+        peerConnection.ontrack = handleTrack;
+        peerConnection.onicecandidate = handleICECandidate;
+        peerConnection.onconnectionstatechange = handleConnectionStateChange;
+        
+        // Now set the negotiation handler after initial setup
+        peerConnection.onnegotiationneeded = handleNegotiationNeeded;
+        
+        // Clear any existing debug interval
+        if (debugInterval) {
+            clearInterval(debugInterval);
+        }
+        
+        // Start periodic audio debugging
+        debugInterval = setInterval(debugAudioState, 5000);
+        
+        return peerConnection;
     } catch (err) {
         console.error('Error getting user media:', err);
         updateStatus('Failed to access microphone: ' + err.message, true);
-        throw err; // Re-throw to handle in caller
+        throw err;
     }
+}
 
-    // Add ICE candidate handling
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-            sendSignal('IceCandidate', {
-                room_id: document.getElementById('roomId').value,
-                from_peer: document.getElementById('peerId').value,
-                to_peer: remotePeerId,
-                candidate: {
-                    candidate: event.candidate.candidate,
-                    sdpMid: event.candidate.sdpMid,
-                    sdpMLineIndex: event.candidate.sdpMLineIndex
-                }
-            });
-        }
-    };
-
-    // Log ICE connection state changes
-    peerConnection.oniceconnectionstatechange = () => {
-        console.log('ICE connection state:', peerConnection.iceConnectionState);
-    };
-
-    return peerConnection;
+// Add this function to check audio state
+function debugAudioState() {
+    const remoteAudio = document.getElementById('remoteAudio');
+    if (remoteAudio) {
+        console.log('Remote audio state:', {
+            readyState: remoteAudio.readyState,
+            paused: remoteAudio.paused,
+            currentTime: remoteAudio.currentTime,
+            srcObject: remoteAudio.srcObject ? {
+                active: remoteAudio.srcObject.active,
+                trackCount: remoteAudio.srcObject.getTracks().length,
+                tracks: remoteAudio.srcObject.getTracks().map(t => ({
+                    kind: t.kind,
+                    enabled: t.enabled,
+                    muted: t.muted,
+                    readyState: t.readyState
+                }))
+            } : null
+        });
+    }
+    
+    if (peerConnection) {
+        console.log('PeerConnection state:', {
+            iceConnectionState: peerConnection.iceConnectionState,
+            connectionState: peerConnection.connectionState,
+            signalingState: peerConnection.signalingState
+        });
+    }
 }
 
 function handleTrackEvent(event) {
@@ -127,18 +238,6 @@ function handleTrackEvent(event) {
         }
     } else {
         console.warn('No remote stream in track event');
-    }
-}
-
-function handleICECandidate(event) {
-    if (event.candidate) {
-        console.log('Generated ICE candidate:', event.candidate);
-        
-        sendSignal('IceCandidate', {
-            room_id: document.getElementById('roomId').value,
-            from_peer: document.getElementById('peerId').value,
-            to_peer: getRemotePeerId()
-        });
     }
 }
 
@@ -243,6 +342,15 @@ export async function startCall() {
         // Set initiator flag
         isInitiator = true;
 
+        // Add a delay to ensure media tracks are fully added
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Verify tracks are added before proceeding
+        const senders = peerConnection.getSenders();
+        if (senders.length === 0) {
+            throw new Error("No media tracks were added to the connection");
+        }
+
         // Create and send offer
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
@@ -266,6 +374,11 @@ export async function startCall() {
 }
 
 async function cleanupExistingConnection() {
+    if (debugInterval) {
+        clearInterval(debugInterval);
+        debugInterval = null;
+    }
+    
     if (peerConnection) {
         const senders = peerConnection.getSenders();
         const promises = senders.map(sender => 
@@ -419,17 +532,24 @@ async function renegotiateMedia() {
         const senders = peerConnection.getSenders();
         const tracks = localStream.getTracks();
         
+        // Handle track updates sequentially to avoid race conditions
         for (const track of tracks) {
             console.log(`Processing ${track.kind} track for renegotiation`);
             const sender = senders.find(s => s.track && s.track.kind === track.kind);
             if (sender) {
                 console.log(`Replacing existing ${track.kind} track`);
                 await sender.replaceTrack(track);
+                // Add small delay after each track replacement
+                await new Promise(resolve => setTimeout(resolve, 100));
             } else {
                 console.log(`Adding new ${track.kind} track`);
                 peerConnection.addTrack(track, localStream);
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
         }
+
+        // Add final delay before cleanup
+        await new Promise(resolve => setTimeout(resolve, 200));
 
         // Remove any senders that no longer have corresponding tracks
         for (const sender of senders) {

@@ -217,6 +217,11 @@ export function sendSignal(messageType, data) {
         return;
     }
 
+    // Special handling for ICE candidates
+    if (messageType === 'IceCandidate' && data.candidate) {
+        data.candidate = JSON.stringify(data.candidate);
+    }
+
     const message = {
         message_type: messageType,
         ...data

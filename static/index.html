@@ -112,11 +112,12 @@
     </script>
     <script type="module">
         import { checkMediaDevices } from './js/webrtc.js';
-        window.checkMediaDevices = checkMediaDevices;
-    </script>
-    <script>
         window.addEventListener('load', async () => {
-            await checkMediaDevices();
+            try {
+                await checkMediaDevices();
+            } catch (err) {
+                console.error('Error checking media devices:', err);
+            }
         });
     </script>
 </body>
