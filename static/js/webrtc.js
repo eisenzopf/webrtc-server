@@ -65,6 +65,16 @@ export function handleTrack(event) {
     }
 }
 
+function createRemoteAudio() {
+    const audioElement = document.createElement('audio');
+    audioElement.id = 'remoteAudio';
+    audioElement.autoplay = true;
+    audioElement.playsinline = true;
+    document.body.appendChild(audioElement);
+    console.log('Created new remote audio element');
+    return audioElement;
+}
+
 function handleICECandidate(event) {
     if (event.candidate) {
         console.log('Generated ICE candidate:', event.candidate);
