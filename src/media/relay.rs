@@ -22,6 +22,8 @@ use log::{debug, info, warn, error};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::TrackLocalWriter;
+use webrtc::util::Marshal;
+use webrtc::peer_connection::RTCSessionDescription;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
@@ -91,15 +93,17 @@ impl MediaRelay {
                 
                 // Read incoming RTP packets and forward them to the local track
                 while let Ok((rtp, _)) = track.read_rtp().await {
-                    // Convert RTP packet to bytes
-                    let mut buf = Vec::new();
-                    if let Err(e) = rtp.marshal(&mut buf) {
-                        error!("Failed to marshal RTP packet: {}", e);
-                        return;
-                    }
-                    
-                    if let Err(e) = track_clone.write(&buf).await {
-                        error!("Failed to forward RTP packet: {}", e);
+                    // Convert RTP packet to bytes using marshal_to
+                    let mut buf = vec![0; 1500];  // Typical MTU size
+                    match rtp.marshal_to(&mut buf) {
+                        Ok(size) => {
+                            if let Err(e) = track_clone.write(&buf[..size]).await {
+                                error!("Failed to forward RTP packet: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to marshal RTP packet: {}", e);
+                        }
                     }
                 }
             })
@@ -189,6 +193,38 @@ impl MediaRelay {
     // Call this when remote description is set
     pub async fn handle_remote_description_set(&self) -> Result<()> {
         self.add_buffered_candidates().await
+    }
+
+    pub async fn set_remote_description(&self, sdp: String) -> Result<()> {
+        let desc = RTCSessionDescription::offer(sdp)?;
+        self.peer_connection.set_remote_description(desc).await?;
+
+        // After setting remote description, apply any buffered ICE candidates
+        let candidates = {
+            let mut buffer = self.ice_candidate_buffer.lock().await;
+            std::mem::take(&mut *buffer)
+        };
+
+        for candidate in candidates {
+            if let Err(e) = self.peer_connection.add_ice_candidate(candidate).await {
+                error!("Failed to add buffered ICE candidate: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn add_ice_candidate(&self, candidate: RTCIceCandidateInit) -> Result<()> {
+        // If remote description is not set yet, buffer the candidate
+        if self.peer_connection.remote_description().await.is_none() {
+            let mut buffer = self.ice_candidate_buffer.lock().await;
+            buffer.push(candidate);
+            return Ok(());
+        }
+
+        // Otherwise add it immediately
+        self.peer_connection.add_ice_candidate(candidate).await?;
+        Ok(())
     }
 }
 
