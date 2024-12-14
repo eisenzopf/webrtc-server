@@ -16,12 +16,13 @@ use tokio::sync::Mutex;
 use std::net::SocketAddr;
 use tokio_tungstenite::tungstenite::Message;
 use serde::Serialize;
-use crate::monitoring::ConnectionMonitor;
+use crate::monitoring::{ConnectionMonitor, StateChangeBroadcaster, StateChangeEvent};
 use crate::signaling::connection_state::{ConnectionState, ConnectionStateManager};
-use crate::monitoring::dashboard::{ConnectionMetrics, check_for_alerts, StateChangeBroadcaster};
 use warp::Rejection;
-use crate::monitoring::run_connection_monitor;
 use std::collections::HashMap;
+use uuid::Uuid;
+use chrono::Utc;
+use warp::ws::Message as WarpMessage;
 
 pub struct SignalingServer {
     pub address: String,
@@ -61,12 +62,6 @@ impl SignalingServer {
         let state_manager = Arc::new(ConnectionStateManager::new());
         let state_broadcaster = Arc::new(StateChangeBroadcaster::new());
         
-        // Spawn the connection monitor task
-        let monitor_clone = connection_monitor.clone();
-        tokio::spawn(async move {
-            run_connection_monitor(monitor_clone).await;
-        });
-
         Ok(SignalingServer {
             address: format!("0.0.0.0:{}", config.ws_port),
             handler: Arc::new(MessageHandler::new(relay_manager)),
@@ -104,100 +99,72 @@ impl SignalingServer {
     }
 
     pub async fn handle_connection(
-        ws_stream: WebSocketStream<TcpStream>,
+        ws: WebSocketStream<TcpStream>,
         addr: SocketAddr,
         handler: Arc<MessageHandler>,
         state_manager: Arc<ConnectionStateManager>,
     ) -> Result<()> {
-        info!("New WebSocket connection established from: {}", addr);
-        
-        let (ws_sender, mut ws_receiver) = ws_stream.split();
+        let (ws_sender, mut ws_receiver) = ws.split();
         let ws_sender = Arc::new(Mutex::new(ws_sender));
+        let temp_id = format!("temp_{}", Uuid::new_v4());
+        let mut current_peer_id = temp_id.clone();
+        let mut current_room_id = String::new();
+        
+        info!("New WebSocket connection from: {}", addr);
+        
+        // Create temporary connection
         let ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
-        
-        // Generate temporary ID and log it
-        let temp_id = format!("temp_{}", addr);
-        debug!("Assigning temporary ID: {} to connection from {}", temp_id, addr);
-        
         handler.set_websocket_sender(temp_id.clone(), ws_conn).await?;
 
-        while let Some(msg) = ws_receiver.next().await {
-            let msg = msg?;
-            if let Message::Text(text) = msg {
-                debug!("Received message from {}: {}", addr, text);
-                
-                let message: SignalingMessage = match serde_json::from_str(&text) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("Failed to parse message from {}: {}", addr, e);
-                        continue;
-                    }
-                };
-                
-                match message.clone() {
-                    SignalingMessage::Join { peer_id, .. } => {
-                        info!("Peer {} joining from address {}", peer_id, addr);
-                        
-                        // Initialize connection state
-                        if state_manager.transition(&peer_id, ConnectionState::New).await {
-                            debug!("Initialized state for peer {}", peer_id);
-                            state_manager.transition(&peer_id, ConnectionState::Joining).await;
-                        } else {
-                            warn!("Failed to initialize state for peer {}", peer_id);
+        let result = async {
+            while let Some(msg) = ws_receiver.next().await {
+                match msg {
+                    Ok(msg) => {
+                        if msg.is_close() {
+                            info!("Received close frame from {}", addr);
+                            break;
                         }
-
-                        let new_ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
                         
-                        debug!("Updating connection mapping for peer {}", peer_id);
-                        handler.set_websocket_sender(peer_id.clone(), new_ws_conn).await?;
-                        
-                        debug!("Removing temporary connection {}", temp_id);
-                        handler.remove_websocket_sender(&temp_id).await?;
-                        
-                        info!("Processing join message for peer {}", peer_id);
-                        handler.handle_message(message, &peer_id).await?;
-                    },
-                    SignalingMessage::CallRequest { from_peer, .. } => {
-                        state_manager.transition(&from_peer, ConnectionState::WaitingForOffer).await;
-                        handler.handle_message(message, &temp_id).await?;
-                    },
-                    SignalingMessage::CallResponse { from_peer, accepted, .. } => {
-                        if accepted {
-                            state_manager.transition(&from_peer, ConnectionState::AnswerCreated).await;
-                        } else {
-                            state_manager.transition(&from_peer, ConnectionState::Failed).await;
-                        }
-                        handler.handle_message(message, &temp_id).await?;
-                    },
-                    SignalingMessage::IceCandidate { from_peer, .. } => {
-                        if let Some(state) = state_manager.get_state(&from_peer).await {
-                            match state {
-                                ConnectionState::OfferReceived | 
-                                ConnectionState::AnswerCreated | 
-                                ConnectionState::Connected => {
-                                    debug!("Processing ICE candidate in state: {:?}", state);
-                                    handler.handle_message(message, &temp_id).await?;
-                                },
-                                _ => {
-                                    warn!("Received ICE candidate in invalid state: {:?}", state);
-                                }
+                        if let Message::Text(text) = msg {
+                            let message: SignalingMessage = serde_json::from_str(&text)?;
+                            
+                            // Add debug logging for all messages
+                            debug!("Received message type: {:?} from peer {}", message, current_peer_id);
+                            
+                            // Update current peer and room IDs when joining
+                            if let SignalingMessage::Join { ref peer_id, ref room_id } = message {
+                                current_peer_id = peer_id.clone();
+                                current_room_id = room_id.clone();
+                                info!("Peer {} joined room {}", peer_id, room_id);
+                            }
+                            
+                            if state_manager.transition(&current_peer_id, ConnectionState::New).await {
+                                handler.handle_message(message, &current_peer_id).await?;
                             }
                         }
-                    },
-                    _ => {
-                        debug!("Processing other message type from {}", addr);
-                        handler.handle_message(message, &temp_id).await?;
+                    }
+                    Err(e) => {
+                        error!("WebSocket error for {}: {}", addr, e);
+                        break;
                     }
                 }
             }
+            Ok::<_, Error>(())
+        }.await;
+
+        // Handle disconnection cleanup
+        info!("WebSocket connection closed for {}", addr);
+        if current_peer_id != temp_id && !current_room_id.is_empty() {
+            info!("Cleaning up disconnected peer {} from room {}", current_peer_id, current_room_id);
+            if let Err(e) = handler.handle_disconnect(&current_peer_id, &current_room_id).await {
+                error!("Error handling disconnect for peer {}: {}", current_peer_id, e);
+            }
         }
-        
-        // Handle disconnection
-        if let Some(peer_id) = get_peer_id_from_temp(&temp_id) {
-            state_manager.transition(&peer_id, ConnectionState::Closed).await;
-        }
-        
-        info!("Connection closed for {}", addr);
+
+        // Clean up temp connection if it still exists
+        handler.remove_websocket_sender(&temp_id).await?;
+
+        result?;
         Ok(())
     }
 
@@ -232,39 +199,54 @@ impl SignalingServer {
                     let ws_sender = Arc::new(Mutex::new(ws_sender));
                     let ws_conn = WebSocketConnection::new_warp(ws_sender.clone());
                     
-                    // Generate a temporary ID for the connection
                     let temp_id = format!("temp_{}", addr);
                     if let Err(e) = handler.set_websocket_sender(temp_id.clone(), ws_conn).await {
                         error!("Failed to set websocket sender: {}", e);
                         return;
                     }
                     
-                    info!("New WebSocket connection from: {}", addr);
-
                     while let Some(result) = ws_receiver.next().await {
                         match result {
                             Ok(msg) => {
                                 if let Ok(text) = msg.to_str() {
                                     match serde_json::from_str::<SignalingMessage>(text) {
                                         Ok(message) => {
-                                            let message_clone = message.clone();
-                                            match message {
-                                                SignalingMessage::Join { peer_id, .. } => {
+                                            match &message {
+                                                SignalingMessage::Join { peer_id, room_id } => {
+                                                    // Create new WebSocket connection with actual peer ID
                                                     let new_ws_conn = WebSocketConnection::new_warp(ws_sender.clone());
                                                     if let Err(e) = handler.set_websocket_sender(peer_id.clone(), new_ws_conn).await {
                                                         error!("Failed to set websocket sender for peer {}: {}", peer_id, e);
                                                         continue;
                                                     }
+                                                    
+                                                    // Remove temporary connection
                                                     if let Err(e) = handler.remove_websocket_sender(&temp_id).await {
                                                         error!("Failed to remove temporary connection: {}", e);
                                                     }
-                                                    if let Err(e) = handler.handle_message(message_clone, &peer_id).await {
+                                                    
+                                                    // Handle the join message
+                                                    let join_msg = SignalingMessage::Join {
+                                                        peer_id: peer_id.clone(),
+                                                        room_id: room_id.clone(),
+                                                    };
+                                                    if let Err(e) = handler.handle_message(join_msg, &peer_id).await {
                                                         error!("Failed to handle join message: {}", e);
                                                     }
                                                 },
+                                                SignalingMessage::Disconnect { peer_id, room_id } => {
+                                                    if let Err(e) = handler.handle_disconnect(&peer_id, &room_id).await {
+                                                        error!("Error handling disconnect for peer {}: {}", peer_id, e);
+                                                    }
+                                                    break;
+                                                },
                                                 _ => {
-                                                    if let Err(e) = handler.handle_message(message_clone, &temp_id).await {
-                                                        error!("Failed to handle message: {}", e);
+                                                    if let Some(peer_id) = message.get_peer_id() {
+                                                        if let Err(e) = handler.handle_message(message, &peer_id).await {
+                                                            error!("Error handling message: {}", e);
+                                                        }
+                                                    } else {
+                                                        error!("Message missing peer_id: {:?}", message);
                                                     }
                                                 }
                                             }
@@ -279,29 +261,32 @@ impl SignalingServer {
                             }
                         }
                     }
-                    
-                    // Clean up when the connection is closed
-                    if let Err(e) = handler.remove_websocket_sender(&temp_id).await {
-                        error!("Failed to remove websocket sender: {}", e);
-                    }
                 })
             })
     }
 
-    pub fn monitoring_routes(&self) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
-        let state_manager = self.state_manager.clone();
-        
-        let metrics_route = warp::path!("api" / "monitoring" / "metrics")
+    pub fn monitoring_routes(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+        let monitor = Arc::clone(&self.connection_monitor);
+        let broadcaster = Arc::clone(&self.state_broadcaster);
+
+        let metrics = warp::path!("monitoring" / "metrics")
             .and(warp::get())
-            .and(with_state_manager(state_manager.clone()))
+            .and(with_monitor(monitor.clone()))
             .and_then(handle_get_metrics);
             
-        let alerts_route = warp::path!("api" / "monitoring" / "alerts")
+        let alerts = warp::path!("monitoring" / "alerts")
             .and(warp::get())
-            .and(with_state_manager(state_manager.clone()))
+            .and(with_monitor(monitor))
             .and_then(handle_get_alerts);
             
-        metrics_route.or(alerts_route)
+        let ws = warp::path!("monitoring" / "ws")
+            .and(warp::ws())
+            .and(with_broadcaster(broadcaster))
+            .map(|ws: warp::ws::Ws, broadcaster| {
+                ws.on_upgrade(move |socket| handle_monitoring_socket(socket, broadcaster))
+            });
+            
+        metrics.or(alerts).or(ws)
     }
 
     pub fn monitoring_ws_route(&self) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
@@ -430,41 +415,80 @@ fn with_media_relay(
 } 
 
 async fn handle_websocket_connection(
-    ws_stream: WebSocketStream<TcpStream>,
+    websocket: warp::ws::WebSocket,
     handler: Arc<MessageHandler>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let (ws_sender, mut ws_receiver) = ws_stream.split();
+    monitor: Arc<ConnectionMonitor>,
+    state_manager: Arc<ConnectionStateManager>,
+) {
+    let (ws_sender, mut ws_receiver) = websocket.split();
     let ws_sender = Arc::new(Mutex::new(ws_sender));
-    let ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
+    let temp_id = format!("temp_{}", Uuid::new_v4());
     
-    // Generate a temporary ID for the connection
-    let temp_id = format!("temp_{}", addr);
-    handler.set_websocket_sender(temp_id.clone(), ws_conn).await?;
-    
-    info!("New connection from: {}", addr);
+    // Set up initial temporary connection
+    let ws_conn = WebSocketConnection::new_warp(ws_sender.clone());
+    if let Err(e) = handler.set_websocket_sender(temp_id.clone(), ws_conn).await {
+        error!("Failed to set websocket sender: {}", e);
+        return;
+    }
 
-    while let Some(msg) = ws_receiver.next().await {
-        let msg = msg?;
-        if let Message::Text(text) = msg {
-            let message: SignalingMessage = serde_json::from_str(&text)?;
-            
-            match message.clone() {  // Clone the message to avoid ownership issues
-                SignalingMessage::Join { peer_id, .. } => {
-                    // Update connection with real peer ID
-                    let new_ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
-                    handler.set_websocket_sender(peer_id.clone(), new_ws_conn).await?;
-                    handler.remove_websocket_sender(&temp_id).await?;
-                    handler.handle_message(message, &peer_id).await?;
-                },
-                _ => {
-                    handler.handle_message(message, &temp_id).await?;
+    while let Some(result) = ws_receiver.next().await {
+        match result {
+            Ok(msg) => {
+                if let Ok(text) = msg.to_str() {
+                    match serde_json::from_str::<SignalingMessage>(text) {
+                        Ok(message) => {
+                            debug!("Received message: {:?}", message.clone());
+                            match message {
+                                SignalingMessage::Join { peer_id, room_id } => {
+                                    // Create new WebSocket connection with actual peer ID
+                                    let new_ws_conn = WebSocketConnection::new_warp(ws_sender.clone());
+                                    if let Err(e) = handler.set_websocket_sender(peer_id.clone(), new_ws_conn).await {
+                                        error!("Failed to set websocket sender for peer {}: {}", peer_id, e);
+                                        continue;
+                                    }
+                                    
+                                    // Remove temporary connection
+                                    if let Err(e) = handler.remove_websocket_sender(&temp_id).await {
+                                        error!("Failed to remove temporary connection: {}", e);
+                                    }
+                                    
+                                    // Handle the join message
+                                    let join_msg = SignalingMessage::Join {
+                                        peer_id: peer_id.clone(),
+                                        room_id: room_id.clone(),
+                                    };
+                                    if let Err(e) = handler.handle_message(join_msg, &peer_id).await {
+                                        error!("Failed to handle join message: {}", e);
+                                    }
+                                },
+                                SignalingMessage::Disconnect { peer_id, room_id } => {
+                                    if let Err(e) = handler.handle_disconnect(&peer_id, &room_id).await {
+                                        error!("Error handling disconnect for peer {}: {}", peer_id, e);
+                                    }
+                                    break;
+                                },
+                                _ => {
+                                    if let Some(peer_id) = message.get_peer_id() {
+                                        if let Err(e) = handler.handle_message(message, &peer_id).await {
+                                            error!("Error handling message: {}", e);
+                                        }
+                                    } else {
+                                        error!("Message missing peer_id: {:?}", message);
+                                    }
+                                }
+                            }
+                        },
+                        Err(e) => error!("Failed to parse message: {}", e)
+                    }
                 }
+            },
+            Err(e) => {
+                error!("WebSocket error: {}", e);
+                break;
             }
         }
     }
-    Ok(())
-} 
+}
 
 fn with_turn_config(
     server: String,
@@ -502,6 +526,10 @@ async fn handle_ws_message(
                             &from_peer, 
                             if accepted { "connected" } else { "rejected" }
                         ).await;
+                    },
+                    SignalingMessage::Disconnect { peer_id, room_id } => {
+                        info!("Peer {} disconnecting from room {}", peer_id, room_id);
+                        monitor.handle_disconnect(&peer_id, &room_id).await;
                     },
                     _ => {}
                 }
@@ -541,60 +569,107 @@ async fn handle_get_states(
 }
 
 async fn handle_get_metrics(
-    state_manager: Arc<ConnectionStateManager>,
+    monitor: Arc<ConnectionMonitor>,
 ) -> std::result::Result<impl warp::Reply, warp::Rejection> {
-    let states = state_manager.get_all_states().await;
-    let metrics = ConnectionMetrics {
-        total_connections: states.len(),
-        active_connections: states.values()
-            .filter(|&state| matches!(state, ConnectionState::Connected))
-            .count(),
-        failed_connections: states.values()
-            .filter(|&state| matches!(state, ConnectionState::Failed))
-            .count(),
-        success_rate: if states.is_empty() { 0.0 } else {
-            let successful = states.values()
-                .filter(|&state| matches!(state, ConnectionState::Connected))
-                .count() as f64;
-            (successful / states.len() as f64) * 100.0
-        },
-        average_connection_time: None, // You'll need to track connection times separately
-        state_distribution: states.into_iter()
-            .fold(HashMap::new(), |mut acc, (_, state)| {
-                *acc.entry(state).or_insert(0) += 1;
-                acc
-            }),
-    };
-    
+    let metrics = monitor.get_metrics().await;
     Ok(warp::reply::json(&metrics))
 }
 
 async fn handle_get_alerts(
-    state_manager: Arc<ConnectionStateManager>,
+    monitor: Arc<ConnectionMonitor>,
 ) -> std::result::Result<impl warp::Reply, warp::Rejection> {
-    let alerts = check_for_alerts(&state_manager).await;
+    let alerts = monitor.check_for_alerts().await;
     Ok(warp::reply::json(&alerts))
 }
 
 async fn handle_monitoring_socket(
-    socket: warp::ws::WebSocket,
+    ws: warp::ws::WebSocket,
     broadcaster: Arc<StateChangeBroadcaster>,
 ) {
-    let (mut sender, _) = socket.split();
+    let (mut ws_sender, _) = ws.split();
     let mut receiver = broadcaster.subscribe();
 
     while let Ok(event) = receiver.recv().await {
         if let Ok(json) = serde_json::to_string(&event) {
-            if let Err(e) = sender.send(warp::ws::Message::text(json)).await {
-                error!("Error sending monitoring message: {}", e);
+            if let Err(e) = ws_sender.send(warp::ws::Message::text(json)).await {
+                error!("Failed to send monitoring update: {}", e);
                 break;
             }
         }
     }
 }
 
+fn with_monitor(
+    monitor: Arc<ConnectionMonitor>,
+) -> impl Filter<Extract = (Arc<ConnectionMonitor>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || monitor.clone())
+}
+
+fn with_broadcaster(
+    broadcaster: Arc<StateChangeBroadcaster>,
+) -> impl Filter<Extract = (Arc<StateChangeBroadcaster>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || broadcaster.clone())
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectionStats {
-    // ... existing fields ...
+    pub peer_id: String,
+    pub connection_state: String,
+    pub ice_connection_state: String,
+    pub connected_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing)]
+    pub last_activity: std::time::Instant,
+    pub last_activity_secs: u64,
+    pub ice_candidates_received: u32,
+    pub ice_candidates_sent: u32,
+    pub data_channels_open: u32,
+    pub error_count: u32,
+}
+
+impl ConnectionStats {
+    pub fn new(peer_id: String) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            peer_id,
+            connection_state: "new".to_string(),
+            ice_connection_state: "new".to_string(),
+            connected_at: None,
+            last_activity: now,
+            last_activity_secs: 0,
+            ice_candidates_received: 0,
+            ice_candidates_sent: 0,
+            data_channels_open: 0,
+            error_count: 0,
+        }
+    }
+
+    pub fn update_state(&mut self, state: &str) {
+        self.connection_state = state.to_string();
+        self.last_activity = std::time::Instant::now();
+        self.last_activity_secs = self.last_activity.elapsed().as_secs();
+        
+        if state == "connected" && self.connected_at.is_none() {
+            self.connected_at = Some(chrono::Utc::now());
+        }
+    }
+
+    pub fn record_ice_candidate(&mut self, received: bool) {
+        if received {
+            self.ice_candidates_received += 1;
+        } else {
+            self.ice_candidates_sent += 1;
+        }
+        self.last_activity = std::time::Instant::now();
+    }
+
+    pub fn record_error(&mut self) {
+        self.error_count += 1;
+        self.last_activity = std::time::Instant::now();
+    }
+
+    pub fn update_data_channels(&mut self, count: u32) {
+        self.data_channels_open = count;
+        self.last_activity = std::time::Instant::now();
+    }
 }
  

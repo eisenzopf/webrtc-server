@@ -68,7 +68,7 @@ impl WebSocketConnection {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "message_type")]
 pub enum SignalingMessage {
     CallRequest {
@@ -136,6 +136,26 @@ pub enum SignalingMessage {
         error: String,
         should_retry: bool,
     },
+}
+
+impl SignalingMessage {
+    pub fn get_peer_id(&self) -> Option<String> {
+        match self {
+            SignalingMessage::Join { peer_id, .. } => Some(peer_id.clone()),
+            SignalingMessage::Disconnect { peer_id, .. } => Some(peer_id.clone()),
+            SignalingMessage::CallRequest { from_peer, .. } => Some(from_peer.clone()),
+            SignalingMessage::CallResponse { from_peer, .. } => Some(from_peer.clone()),
+            SignalingMessage::Offer { from_peer, .. } => Some(from_peer.clone()),
+            SignalingMessage::Answer { from_peer, .. } => Some(from_peer.clone()),
+            SignalingMessage::IceCandidate { from_peer, .. } => Some(from_peer.clone()),
+            SignalingMessage::MediaError { peer_id, .. } => Some(peer_id.clone()),
+            SignalingMessage::EndCall { peer_id, .. } => Some(peer_id.clone()),
+            SignalingMessage::PeerDisconnected { peer_id, .. } => Some(peer_id.clone()),
+            SignalingMessage::ConnectionError { peer_id, .. } => Some(peer_id.clone()),
+            SignalingMessage::PeerList { .. } => None,
+            SignalingMessage::RequestPeerList { .. } => None,
+        }
+    }
 }
 
 pub type PeerConnection = (String, Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>);

@@ -320,10 +320,7 @@ impl MediaRelayManager {
     }
 
     pub async fn handle_peer_disconnect(&self, peer_id: &str, room_id: &str) -> Result<()> {
-        // Remove the relay
-        self.remove_relay(peer_id).await?;
-        
-        // Get remaining peers in the room to notify them
+        // Get the relay and peer list before removing
         let relays = self.relays.read().await;
         let room_peers: Vec<String> = relays
             .iter()
@@ -336,22 +333,17 @@ impl MediaRelayManager {
             })
             .collect();
 
+        // Close the peer connection if it exists
+        if let Some(relay) = relays.get(peer_id) {
+            relay.peer_connection.close().await?;
+        }
+        drop(relays); // Release the read lock
+
+        // Now remove the relay
+        self.remove_relay(peer_id).await?;
+
         info!("Peer {} disconnected from room {}. Remaining peers: {:?}", 
             peer_id, room_id, room_peers);
-
-        // Notify remaining peers about the disconnection
-        for remaining_peer in &room_peers {
-            if let Some(relay) = relays.get(remaining_peer) {
-                let disconnect_msg = SignalingMessage::PeerList {
-                    peers: room_peers.clone(),
-                    room_id: room_id.to_string(),
-                };
-                
-                if let Err(e) = relay.send_signal(&disconnect_msg).await {
-                    error!("Failed to send peer list update to {}: {}", remaining_peer, e);
-                }
-            }
-        }
 
         Ok(())
     }

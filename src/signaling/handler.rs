@@ -31,6 +31,7 @@ use serde::{Serialize, Deserialize};
 pub struct MessageHandler {
     relay_manager: Arc<MediaRelayManager>,
     websocket_senders: Arc<RwLock<HashMap<String, WebSocketConnection>>>,
+    peer_rooms: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl MessageHandler {
@@ -38,6 +39,7 @@ impl MessageHandler {
         Self {
             relay_manager,
             websocket_senders: Arc::new(RwLock::new(HashMap::new())),
+            peer_rooms: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -150,6 +152,8 @@ impl MessageHandler {
     }
 
     pub async fn handle_message(&self, msg: SignalingMessage, peer_id: &str) -> Result<()> {
+        debug!("Handling message: {:?} from peer {}", msg, peer_id);
+        
         match msg {
             SignalingMessage::CallRequest { room_id, from_peer, to_peers, sdp } => {
                 debug!("Handling call request from {} to {:?}", from_peer, to_peers);
@@ -201,7 +205,53 @@ impl MessageHandler {
     }
 
     pub async fn handle_disconnect(&self, peer_id: &str, room_id: &str) -> Result<()> {
-        // Implementation for disconnect handling
+        info!("Starting disconnect process for peer {} from room {}", peer_id, room_id);
+        
+        // Log peer rooms state before removal
+        let peer_rooms_before = self.peer_rooms.read().await;
+        info!("Current peer rooms before removal: {:?}", *peer_rooms_before);
+        drop(peer_rooms_before);
+        
+        // Remove WebSocket sender first
+        self.remove_websocket_sender(peer_id).await?;
+        
+        // Remove from relay manager first to close connections
+        self.relay_manager.handle_peer_disconnect(peer_id, room_id).await?;
+        
+        // Get remaining peers from peer_rooms before removal
+        let remaining_peers: Vec<String> = self.peer_rooms
+            .read()
+            .await
+            .iter()
+            .filter_map(|(pid, rid)| {
+                if rid == room_id && pid != peer_id {
+                    Some(pid.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        info!("Remaining peers before removal: {:?}", remaining_peers);
+        
+        // Remove from room tracking
+        let removed = self.peer_rooms.write().await.remove(peer_id);
+        info!("Removed peer {} from room tracking: {:?}", peer_id, removed);
+        
+        // Log the state for debugging
+        info!("Peer {} disconnected. Remaining peers in room {}: {:?}", peer_id, room_id, remaining_peers);
+        
+        // Create and broadcast peer list update
+        let peer_list_msg = SignalingMessage::PeerList {
+            room_id: room_id.to_string(),
+            peers: remaining_peers,
+        };
+        
+        info!("Broadcasting peer list update: {:?}", peer_list_msg);
+        
+        // Broadcast to remaining peers
+        self.broadcast_message(&peer_list_msg).await?;
+        
         Ok(())
     }
 
@@ -212,12 +262,25 @@ impl MessageHandler {
     }
 
     pub async fn handle_join(&self, room_id: String, peer_id: String) -> Result<()> {
-        // First add the peer to the relay manager
+        // Add to relay manager
         self.relay_manager.add_peer(&room_id, peer_id.clone()).await?;
         
-        // Then get updated peer list
-        let relays = self.relay_manager.get_relays().await?;
-        let peer_ids: Vec<String> = relays.keys().cloned().collect();
+        // Add to peer_rooms tracking
+        self.peer_rooms.write().await.insert(peer_id.clone(), room_id.clone());
+        
+        // Get updated peer list from peer_rooms
+        let peer_ids: Vec<String> = self.peer_rooms
+            .read()
+            .await
+            .iter()
+            .filter_map(|(pid, rid)| {
+                if rid == &room_id {
+                    Some(pid.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         
         // Create peer list message
         let peer_list_msg = SignalingMessage::PeerList {
@@ -247,10 +310,22 @@ impl MessageHandler {
     pub async fn broadcast_message(&self, msg: &SignalingMessage) -> Result<()> {
         let json = serde_json::to_string(msg)?;
         let senders = self.websocket_senders.read().await;
+        let peer_rooms = self.peer_rooms.read().await;
         
-        for ws_conn in senders.values() {
-            if let Err(e) = ws_conn.send(json.clone()).await {
-                warn!("Failed to send message to peer: {}", e);
+        info!("Broadcasting message: {:?}", msg);
+        info!("Current peer rooms state: {:?}", *peer_rooms);
+        
+        // Only broadcast to peers in the same room
+        if let SignalingMessage::PeerList { room_id, .. } = msg {
+            for (peer_id, ws_conn) in senders.iter() {
+                if let Some(peer_room) = peer_rooms.get(peer_id) {
+                    if peer_room == room_id {
+                        info!("Sending to peer {} in room {}", peer_id, room_id);
+                        if let Err(e) = ws_conn.send(json.clone()).await {
+                            warn!("Failed to send message to peer {}: {}", peer_id, e);
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -259,5 +334,9 @@ impl MessageHandler {
     pub async fn get_websocket_sender(&self, peer_id: &str) -> Result<Option<WebSocketConnection>> {
         let senders = self.websocket_senders.read().await;
         Ok(senders.get(peer_id).cloned())
+    }
+
+    pub async fn get_peer_room(&self, peer_id: &str) -> Option<String> {
+        self.peer_rooms.read().await.get(peer_id).cloned()
     }
 } 

@@ -430,20 +430,43 @@ export async function cleanupExistingConnection() {
     }
     
     if (peerConnection) {
-        const senders = peerConnection.getSenders();
-        const promises = senders.map(sender => 
-            peerConnection.removeTrack(sender)
-        );
-        await Promise.all(promises);
-        peerConnection.close();
-        peerConnection = null;
-    }
+        try {
+            // Remove all tracks
+            const senders = peerConnection.getSenders();
+            const promises = senders.map(sender => 
+                peerConnection.removeTrack(sender)
+            );
+            await Promise.all(promises);
 
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            track.stop();
-        });
-        localStream = null;
+            // Close data channels
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+
+            // Close the connection
+            peerConnection.close();
+            peerConnection = null;
+
+            // Stop all local tracks
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    track.stop();
+                });
+                localStream = null;
+            }
+
+            // Clear video elements
+            const localVideo = document.getElementById('localVideo');
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (localVideo) localVideo.srcObject = null;
+            if (remoteVideo) remoteVideo.srcObject = null;
+
+            updateStatus('Connection cleaned up');
+        } catch (err) {
+            console.error('Error during connection cleanup:', err);
+            updateStatus('Error during cleanup: ' + err.message);
+        }
     }
 }
 
@@ -729,4 +752,52 @@ function updateAudioMeter(level) {
         const percentage = Math.min(100, level * 2);
         meterFill.style.width = `${percentage}%`;
     }
+}
+
+export async function handleDisconnect(peer_id) {
+    try {
+        // Clean up the connection
+        await cleanupExistingConnection();
+
+        // Update UI
+        updateStatus('Peer disconnected: ' + peer_id);
+        document.getElementById('audioStatus').textContent = 'Audio status: Disconnected';
+
+        // Reset connection state
+        isConnected = false;
+        remotePeerId = null;
+
+        // Notify the application about the disconnection
+        const event = new CustomEvent('peerDisconnected', {
+            detail: { peerId: peer_id }
+        });
+        window.dispatchEvent(event);
+
+    } catch (err) {
+        console.error('Error handling disconnect:', err);
+        updateStatus('Error handling disconnect: ' + err.message);
+    }
+}
+
+// Add event listener for connection state changes
+export function setupConnectionStateHandler(pc) {
+    if (!pc) return;
+
+    pc.onconnectionstatechange = () => {
+        console.log('Connection state changed:', pc.connectionState);
+        
+        switch (pc.connectionState) {
+            case 'disconnected':
+            case 'failed':
+            case 'closed':
+                handleDisconnect(remotePeerId);
+                break;
+            case 'connected':
+                updateStatus('Connected to peer');
+                break;
+            case 'connecting':
+                updateStatus('Connecting...');
+                break;
+        }
+    };
 }

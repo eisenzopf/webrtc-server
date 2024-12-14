@@ -101,11 +101,31 @@ export function sendSignal(type, data) {
 }
 
 export async function disconnect() {
-    isDisconnecting = true;
-    if (ws) {
-        ws.close();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        isDisconnecting = true;
+        const disconnectMessage = {
+            message_type: 'Disconnect',
+            room_id: document.getElementById('roomId').value,
+            peer_id: document.getElementById('peerId').value
+        };
+        
+        try {
+            // Send disconnect message and wait for it to complete
+            await new Promise((resolve, reject) => {
+                ws.send(JSON.stringify(disconnectMessage));
+                
+                // Give the message a chance to be sent
+                setTimeout(resolve, 100);
+            });
+        } catch (err) {
+            console.error('Error sending disconnect message:', err);
+        } finally {
+            // Cleanup connection
+            await cleanupExistingConnection();
+            ws.close();
+            updateStatus('Disconnected');
+        }
     }
-    updateStatus('Disconnected');
 }
 
 async function handleCallRequest(message) {
