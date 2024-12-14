@@ -85,16 +85,41 @@ impl MessageHandler {
     ) -> Result<()> {
         let relays = self.relay_manager.get_relays().await?;
         
+        // Parse the candidate string to remove extra encoding
+        let parsed_candidate = if candidate.starts_with('"') {
+            serde_json::from_str::<String>(&candidate)?
+        } else {
+            candidate.clone()
+        };
+        
+        // Forward the ICE candidate to the remote peer first
+        if let Some(sender) = self.get_websocket_sender(&to_peer).await? {
+            let message = SignalingMessage::IceCandidate {
+                room_id: room_id.clone(),
+                from_peer: from_peer.clone(),
+                to_peer: to_peer.clone(),
+                candidate: parsed_candidate.clone(),
+            };
+            sender.send(serde_json::to_string(&message)?).await?;
+        }
+
+        // Then handle it for the local peer connection
         if let Some(relay) = relays.get(&to_peer) {
-            match serde_json::from_str::<RTCIceCandidateInit>(&candidate) {
+            match serde_json::from_str::<RTCIceCandidateInit>(&parsed_candidate) {
                 Ok(ice_candidate) => {
-                    match relay.peer_connection.add_ice_candidate(ice_candidate).await {
-                        Ok(_) => {
-                            debug!("Successfully added ICE candidate for peer {}", to_peer);
+                    // Only try to add the candidate if we have a remote description
+                    if relay.peer_connection.remote_description().await.is_some() {
+                        match relay.peer_connection.add_ice_candidate(ice_candidate).await {
+                            Ok(_) => {
+                                debug!("Successfully added ICE candidate for peer {}", to_peer);
+                            }
+                            Err(e) => {
+                                warn!("Could not add ICE candidate for {}: {}", to_peer, e);
+                            }
                         }
-                        Err(e) => {
-                            warn!("Could not add ICE candidate for {}: {}", to_peer, e);
-                        }
+                    } else {
+                        debug!("Buffering ICE candidate for peer {} until remote description is set", to_peer);
+                        // Here you might want to implement a buffer mechanism in the MediaRelay struct
                     }
                 }
                 Err(e) => {
@@ -228,5 +253,10 @@ impl MessageHandler {
             }
         }
         Ok(())
+    }
+
+    pub async fn get_websocket_sender(&self, peer_id: &str) -> Result<Option<WebSocketConnection>> {
+        let senders = self.websocket_senders.read().await;
+        Ok(senders.get(peer_id).cloned())
     }
 } 

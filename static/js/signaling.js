@@ -189,23 +189,7 @@ async function handleWebSocketMessage(event) {
                 break;
 
             case "IceCandidate":
-                if (!peerConnection) {
-                    console.warn('Received ICE candidate but no peer connection exists');
-                    iceCandidateBuffer.push(message.candidate);
-                    return;
-                }
-                
-                try {
-                    if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-                        console.log('Added ICE candidate');
-                    } else {
-                        console.log('Buffering ICE candidate until remote description is set');
-                        iceCandidateBuffer.push(message.candidate);
-                    }
-                } catch (err) {
-                    console.error('Error adding ICE candidate:', err);
-                }
+                await handleIceCandidateMessage(message);
                 break;
 
             case "EndCall":
@@ -402,23 +386,28 @@ async function handleAnswerMessage(message) {
 async function handleIceCandidateMessage(message) {
     try {
         console.log('Received ICE candidate message:', message);
-        const candidate = JSON.parse(message.candidate);
         
         if (!peerConnection) {
-            throw new Error("No peer connection exists");
+            console.warn('Received ICE candidate but no peer connection exists');
+            iceCandidateBuffer.push(message.candidate);
+            return;
         }
 
-        console.log('Current signaling state:', peerConnection.signalingState);
-        console.log('Remote description status:', {
-            exists: !!peerConnection.remoteDescription,
-            type: peerConnection.remoteDescription?.type
-        });
+        // Parse the candidate if it's a string
+        const candidate = typeof message.candidate === 'string' 
+            ? JSON.parse(message.candidate) 
+            : message.candidate;
 
-        if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-            await peerConnection.addIceCandidate(candidate);
-            console.log('Added ICE candidate immediately');
-        } else {
-            console.log('Remote description not set, buffering ICE candidate');
+        try {
+            if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                console.log('Added ICE candidate immediately');
+            } else {
+                console.log('Buffering ICE candidate until remote description is set');
+                iceCandidateBuffer.push(candidate);
+            }
+        } catch (err) {
+            console.error('Error adding ICE candidate:', err);
             iceCandidateBuffer.push(candidate);
         }
     } catch (err) {

@@ -79,11 +79,20 @@ function handleICECandidate(event) {
     if (event.candidate) {
         console.log('Generated ICE candidate:', event.candidate);
         
+        // Only send if we have a remote peer ID
+        if (!remotePeerId) {
+            console.warn('No remote peer ID set, cannot send ICE candidate');
+            return;
+        }
+
+        // Ensure the candidate is properly stringified
+        const candidateJson = JSON.stringify(event.candidate);
+        
         sendSignal('IceCandidate', {
             room_id: document.getElementById('roomId').value,
             from_peer: document.getElementById('peerId').value,
             to_peer: remotePeerId,
-            candidate: event.candidate
+            candidate: candidateJson
         });
     }
 }

@@ -19,6 +19,7 @@ use webrtc::stats::StatsReportType;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 use log::{debug, info, warn, error};
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
 pub trait SignalingHandler {
     fn send_to_peer(&self, peer_id: &str, message: &SignalingMessage) -> impl std::future::Future<Output = Result<()>> + Send;
@@ -31,6 +32,7 @@ pub struct MediaRelay {
     pub video_track: Option<Arc<TrackLocalStaticRTP>>,
     pub peer_id: String,
     data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    ice_candidate_buffer: Arc<Mutex<Vec<RTCIceCandidateInit>>>,
 }
 
 pub struct MediaRelayManager {
@@ -78,6 +80,7 @@ impl MediaRelay {
             audio_track: None,
             video_track: None,
             data_channel: Arc::new(Mutex::new(None)),
+            ice_candidate_buffer: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -128,6 +131,33 @@ impl MediaRelay {
     pub async fn set_data_channel(&self, dc: Arc<RTCDataChannel>) {
         let mut data_channel = self.data_channel.lock().await;
         *data_channel = Some(dc);
+    }
+
+    pub async fn buffer_ice_candidate(&self, candidate: RTCIceCandidateInit) {
+        let mut buffer = self.ice_candidate_buffer.lock().await;
+        buffer.push(candidate);
+    }
+
+    pub async fn add_buffered_candidates(&self) -> Result<()> {
+        let mut buffer = self.ice_candidate_buffer.lock().await;
+        
+        while let Some(candidate) = buffer.pop() {
+            match self.peer_connection.add_ice_candidate(candidate).await {
+                Ok(_) => {
+                    debug!("Successfully added buffered ICE candidate");
+                }
+                Err(e) => {
+                    warn!("Failed to add buffered ICE candidate: {}", e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    // Call this when remote description is set
+    pub async fn handle_remote_description_set(&self) -> Result<()> {
+        self.add_buffered_candidates().await
     }
 }
 
