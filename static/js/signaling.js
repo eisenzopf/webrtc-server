@@ -11,7 +11,8 @@ import {
     resetLocalStream,
     resetRemotePeerId,
     setRemotePeerId,
-    setLocalStream
+    setLocalStream,
+    isInitiator
 } from './webrtc.js';
 
 import { updateStatus, handlePeerListMessage } from './ui.js';
@@ -263,24 +264,20 @@ async function handleCallResponseMessage(message) {
     if (message.accepted) {
         setRemotePeerId(message.from_peer);
         updateStatus(`Call accepted by ${remotePeerId}`);
-        try {
-            await setupPeerConnection();
-            // Create and send offer
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-
-            sendSignal('Offer', {
-                room_id: document.getElementById('roomId').value,
-                from_peer: document.getElementById('peerId').value,
-                to_peer: remotePeerId,
-                sdp: offer.sdp
-            });
-        } catch (err) {
-            console.error('Error setting up call:', err);
-            updateStatus('Failed to setup call: ' + err.message, true);
+        
+        if (!isInitiator) {
+            try {
+                if (!peerConnection) {
+                    await setupPeerConnection();
+                }
+                console.log('Call accepted, waiting for answer...');
+            } catch (err) {
+                console.error('Error setting up connection:', err);
+                updateStatus('Failed to setup connection: ' + err.message, true);
+            }
         }
     } else {
-        updateStatus(`Call rejected by ${message.from_peer}: ${message.reason || 'No reason given'}`, true);
+        updateStatus(`Call rejected by ${message.from_peer}`, true);
         await cleanupExistingConnection();
     }
 }
@@ -336,7 +333,7 @@ async function handleOfferMessage(message) {
 }
 
 async function handleAnswerMessage(message) {
-    console.log("Received answer from:", message.from_peer);
+    console.log("Received answer from:", message.from_peer, "Current signaling state:", peerConnection?.signalingState);
     
     try {
         if (!peerConnection) {
@@ -349,7 +346,7 @@ async function handleAnswerMessage(message) {
         });
 
         await peerConnection.setRemoteDescription(remoteDesc);
-        console.log("Set remote description from answer");
+        console.log("Set remote description from answer, new signaling state:", peerConnection.signalingState);
 
         // Process any buffered candidates
         console.log(`Processing ${iceCandidateBuffer.length} buffered ICE candidates`);
@@ -371,22 +368,28 @@ async function handleAnswerMessage(message) {
 
 async function handleIceCandidateMessage(message) {
     try {
+        console.log('Received ICE candidate message:', message);
         const candidate = JSON.parse(message.candidate);
         
         if (!peerConnection) {
             throw new Error("No peer connection exists");
         }
 
+        console.log('Current signaling state:', peerConnection.signalingState);
+        console.log('Remote description status:', {
+            exists: !!peerConnection.remoteDescription,
+            type: peerConnection.remoteDescription?.type
+        });
+
         if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-            // Remote description is set, add candidate immediately
             await peerConnection.addIceCandidate(candidate);
-            console.log('Added ICE candidate');
+            console.log('Added ICE candidate immediately');
         } else {
-            // Buffer the candidate for later
             console.log('Remote description not set, buffering ICE candidate');
             iceCandidateBuffer.push(candidate);
         }
     } catch (err) {
-        console.warn('Error handling ICE candidate:', err);
+        console.error('Error handling ICE candidate:', err);
+        console.error('Candidate that caused error:', message.candidate);
     }
 }

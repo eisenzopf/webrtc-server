@@ -7,6 +7,7 @@ export let peerConnection;
 export let localStream;
 export let remotePeerId = null;
 export let enableVideo = false;
+export let isInitiator = false;
 
 export async function getIceServers() {
     try {
@@ -191,14 +192,16 @@ function handleIceConnectionStateChange() {
 function handleConnectionStateChange() {
     if (!peerConnection) return;
     
-    console.log('Connection state changed:', {
+    const states = {
         connectionState: peerConnection.connectionState,
         iceConnectionState: peerConnection.iceConnectionState,
         iceGatheringState: peerConnection.iceGatheringState,
         signalingState: peerConnection.signalingState
-    });
+    };
+    
+    console.log('Connection state changed:', states);
 
-    // Check all tracks
+    // Log all tracks
     const receivers = peerConnection.getReceivers();
     receivers.forEach(receiver => {
         console.log(`${receiver.track.kind} receiver track:`, {
@@ -207,6 +210,15 @@ function handleConnectionStateChange() {
             readyState: receiver.track.readyState
         });
     });
+
+    // Update UI based on connection state
+    if (states.connectionState === 'connected') {
+        updateStatus('Call connected!');
+    } else if (states.connectionState === 'failed') {
+        updateStatus('Call failed to connect', true);
+    } else if (states.connectionState === 'disconnected') {
+        updateStatus('Call disconnected', true);
+    }
 }
 
 export async function startCall() {
@@ -225,12 +237,16 @@ export async function startCall() {
         // Clean up any existing connections
         await cleanupExistingConnection();
 
-        // Setup new peer connection (this will also get media stream and add tracks)
+        // Setup new peer connection
         await setupPeerConnection();
+        
+        // Set initiator flag
+        isInitiator = true;
 
         // Create and send offer
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
+        console.log('Created and set local description (offer)');
 
         // Send call request with offer and SDP
         sendSignal('CallRequest', {
@@ -240,11 +256,12 @@ export async function startCall() {
             sdp: offer.sdp
         });
 
-        updateStatus('Initiating server-relayed call...');
+        updateStatus('Initiating call...');
     } catch (err) {
         console.error('Error starting call:', err);
         updateStatus('Failed to start call: ' + err.message, true);
         await cleanupExistingConnection();
+        isInitiator = false;
     }
 }
 
