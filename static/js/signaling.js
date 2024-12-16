@@ -1,6 +1,14 @@
 // signaling.js
 import { peerConnection, setupPeerConnection, cleanupExistingConnection, setRemotePeerId } from './webrtc.js';
-import { updateStatus, showCallAlert, handlePeerListMessage, updateButtonStates, updateCallStatus } from './ui.js';
+import { 
+    updateStatus, 
+    showCallAlert, 
+    handlePeerListMessage, 
+    updateButtonStates, 
+    updateCallStatus,
+    updatePeerCheckboxState,
+    resetAllPeerCheckboxes 
+} from './ui.js';
 
 let ws = null;
 let reconnectAttempts = 0;
@@ -170,8 +178,6 @@ async function handleCallRequest(message) {
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             
-            console.log('Created answer with SDP:', answer.sdp.substring(0, 100) + '...');
-            
             // Apply any pending ICE candidates
             while (pendingIceCandidates.length > 0) {
                 const candidate = pendingIceCandidates.shift();
@@ -186,27 +192,31 @@ async function handleCallRequest(message) {
                 sdp: answer.sdp
             };
             
-            console.log('Sending CallResponse:', JSON.stringify(callResponse, null, 2));
             sendSignal('CallResponse', callResponse);
             
             updateStatus('Call connected');
             updateCallStatus('connected', message.from_peer);
             updateButtonStates('connected', 'incall');
+            // Disable the checkbox for the connected peer
+            updatePeerCheckboxState(message.from_peer, true, true);
             
         } catch (err) {
             console.error('Error handling call request:', err);
             updateStatus('Failed to establish call: ' + err.message, true);
             await cleanupExistingConnection();
-            updateButtonStates('connected', 'idle');
+            resetAllPeerCheckboxes();  // Reset checkboxes on error
         }
     } else {
+        // Send rejection response
         sendSignal('CallResponse', {
             room_id: document.getElementById('roomId').value,
             from_peer: document.getElementById('peerId').value,
             to_peer: message.from_peer,
             accepted: false
         });
+        // Update UI state
         updateButtonStates('connected', 'idle');
+        resetAllPeerCheckboxes();
     }
 }
 
@@ -230,6 +240,8 @@ async function handleCallResponse(message) {
             updateStatus('Call connected');
             updateCallStatus('connected', message.from_peer);
             updateButtonStates('connected', 'incall');
+            // Disable the checkbox for the connected peer
+            updatePeerCheckboxState(message.from_peer, true, true);
             
             // Apply any pending ICE candidates
             console.log(`Applying ${pendingIceCandidates.length} pending ICE candidates`);
@@ -243,12 +255,14 @@ async function handleCallResponse(message) {
             updateStatus('Failed to establish call: ' + err.message, true);
             await cleanupExistingConnection();
             updateButtonStates('connected', 'idle');
+            resetAllPeerCheckboxes();  // Reset checkboxes on error
         }
     } else {
         console.log('Call rejected by peer:', message.from_peer);
         updateStatus('Call rejected by peer', true);
         await cleanupExistingConnection();
         updateButtonStates('connected', 'idle');
+        resetAllPeerCheckboxes();  // Reset checkboxes when call is rejected
     }
 }
 

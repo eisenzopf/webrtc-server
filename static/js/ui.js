@@ -209,4 +209,20 @@ export function updateButtonStates(connectionState, callState) {
         default:
             connectButton.disabled = false;
     }
+}
+
+// Add these new functions
+export function updatePeerCheckboxState(peerId, checked, disabled) {
+    const checkbox = document.querySelector(`#peer_${peerId}`);
+    if (checkbox) {
+        checkbox.checked = checked;
+        checkbox.disabled = disabled;
+    }
+}
+
+export function resetAllPeerCheckboxes() {
+    const checkboxes = document.querySelectorAll('#selectablePeerList input[type="checkbox"]');
+    checkboxes.forEach(checkbox => {
+        checkbox.disabled = false;
+    });
 } 

@@ -1,5 +1,5 @@
 // Add this import at the top of the file
-import { updateStatus, updateCallStatus, updateButtonStates } from './ui.js';
+import { updateStatus, updateCallStatus, updateButtonStates, resetAllPeerCheckboxes } from './ui.js';
 import { sendSignal } from './signaling.js';
 
 // Export shared state and functions
@@ -514,17 +514,22 @@ export async function endCall() {
         });
         
         // Update UI
-        updateCallStatus('ready');
+        updateCallStatus('disconnected');
         document.getElementById('startCallButton').disabled = false;
         document.getElementById('endCallButton').disabled = true;
         document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
         
         console.log('Call ended successfully');
-        updateCallStatus('disconnected');
         updateButtonStates('connected', 'idle');
+        
+        // Reset all peer checkboxes to enabled state
+        resetAllPeerCheckboxes();
+        
     } catch (err) {
         console.error('Error ending call:', err);
         updateStatus('Error ending call: ' + err.message, true);
+        // Still try to reset checkboxes even if there's an error
+        resetAllPeerCheckboxes();
     }
 }
 
