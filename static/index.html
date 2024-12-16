@@ -81,7 +81,6 @@
         <div id="selectablePeerList" class="peer-list">
             <!-- Peers will be dynamically added here -->
         </div>
-        <button id="callSelectedButton">Call Selected Peers</button>
     </div>
 
     <div class="status" id="connectionStatus">Not connected</div>
@@ -111,7 +110,6 @@
             document.getElementById('connectButton').onclick = connect;
             document.getElementById('startCallButton').onclick = startCall;
             document.getElementById('endCallButton').onclick = endCall;
-            document.getElementById('callSelectedButton').onclick = startCall;
             
             // Add the test audio function to the window object
             window.testAudio = testAudioOutput;
@@ -140,6 +138,12 @@
                 console.error('Error during disconnect:', err);
                 updateStatus('Disconnect failed: ' + err.message, true);
             }
+        });
+    </script>
+    <script type="module">
+        import { initializeButtonStates } from './js/ui.js';
+        window.addEventListener('load', () => {
+            initializeButtonStates();
         });
     </script>
 </body>

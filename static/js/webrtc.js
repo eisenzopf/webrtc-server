@@ -1,5 +1,5 @@
 // Add this import at the top of the file
-import { updateStatus, updateCallStatus } from './ui.js';
+import { updateStatus, updateCallStatus, updateButtonStates } from './ui.js';
 import { sendSignal } from './signaling.js';
 
 // Export shared state and functions
@@ -412,11 +412,15 @@ export async function startCall() {
         });
 
         updateStatus('Initiating call...');
+        updateCallStatus('connecting');
+        updateButtonStates('connected', 'connecting');
     } catch (err) {
         console.error('Error starting call:', err);
         updateStatus('Failed to start call: ' + err.message, true);
         await cleanupExistingConnection();
         isInitiator = false;
+        updateCallStatus('disconnected');
+        updateButtonStates('connected', 'idle');
     }
 }
 
@@ -516,6 +520,8 @@ export async function endCall() {
         document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
         
         console.log('Call ended successfully');
+        updateCallStatus('disconnected');
+        updateButtonStates('connected', 'idle');
     } catch (err) {
         console.error('Error ending call:', err);
         updateStatus('Error ending call: ' + err.message, true);

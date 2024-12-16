@@ -1,6 +1,6 @@
 // signaling.js
 import { peerConnection, setupPeerConnection, cleanupExistingConnection, setRemotePeerId } from './webrtc.js';
-import { updateStatus, showCallAlert, handlePeerListMessage } from './ui.js';
+import { updateStatus, showCallAlert, handlePeerListMessage, updateButtonStates, updateCallStatus } from './ui.js';
 
 let ws = null;
 let reconnectAttempts = 0;
@@ -38,40 +38,30 @@ export async function connect() {
             };
             ws.send(JSON.stringify(joinMessage));
             updateStatus('Connected to signaling server');
+            updateButtonStates('connected', 'idle');
         };
 
         ws.onmessage = async (event) => {
-            const message = JSON.parse(event.data);
-            console.log('Received message:', message);
-            
-            // Handle different message types
             try {
+                const message = JSON.parse(event.data);
+                console.log('Received message:', message);
+
                 switch (message.message_type) {
                     case 'PeerList':
                         handlePeerListMessage(message);
                         break;
-                        
                     case 'CallRequest':
                         await handleCallRequest(message);
                         break;
-                        
                     case 'CallResponse':
                         await handleCallResponse(message);
                         break;
-                        
                     case 'IceCandidate':
                         await handleIceCandidate(message);
                         break;
-                        
-                    case 'ConnectionError':
-                        handleConnectionError(message);
-                        break;
-                        
                     case 'EndCall':
-                        console.log('Received EndCall signal from peer:', message.peer_id);
-                        handleRemoteCallEnded(message.peer_id);
+                        await handleEndCall(message);
                         break;
-                        
                     default:
                         console.warn('Unknown message type:', message.message_type);
                 }
@@ -81,19 +71,30 @@ export async function connect() {
             }
         };
 
+        ws.onclose = (event) => {
+            console.log('WebSocket connection closed:', event);
+            updateStatus('Disconnected from signaling server');
+            updateButtonStates('disconnected', 'idle');
+            
+            // Only attempt reconnect if not intentionally disconnecting
+            if (!isDisconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                reconnectAttempts++;
+                console.log(`Reconnecting to signaling server (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+                connect();
+            } else {
+                console.log('Max reconnection attempts reached, not reconnecting');
+            }
+        };
+
         ws.onerror = (error) => {
             console.error('WebSocket error:', error);
             updateStatus('Connection error: ' + error.message, true);
         };
-
-        ws.onclose = () => {
-            console.log('WebSocket connection closed');
-            updateStatus('Disconnected from signaling server');
-        };
-
-    } catch (err) {
-        console.error('Connection error:', err);
-        updateStatus('Connection failed: ' + err.message, true);
+        
+    } catch (error) {
+        console.error('Connection failed:', error);
+        updateStatus('Connection failed: ' + error.message, true);
+        updateButtonStates('disconnected', 'idle');
     }
 }
 
@@ -189,10 +190,14 @@ async function handleCallRequest(message) {
             sendSignal('CallResponse', callResponse);
             
             updateStatus('Call connected');
+            updateCallStatus('connected', message.from_peer);
+            updateButtonStates('connected', 'incall');
+            
         } catch (err) {
             console.error('Error handling call request:', err);
             updateStatus('Failed to establish call: ' + err.message, true);
             await cleanupExistingConnection();
+            updateButtonStates('connected', 'idle');
         }
     } else {
         sendSignal('CallResponse', {
@@ -201,6 +206,7 @@ async function handleCallRequest(message) {
             to_peer: message.from_peer,
             accepted: false
         });
+        updateButtonStates('connected', 'idle');
     }
 }
 
@@ -222,6 +228,8 @@ async function handleCallResponse(message) {
             }));
             console.log('Remote description set successfully');
             updateStatus('Call connected');
+            updateCallStatus('connected', message.from_peer);
+            updateButtonStates('connected', 'incall');
             
             // Apply any pending ICE candidates
             console.log(`Applying ${pendingIceCandidates.length} pending ICE candidates`);
@@ -234,11 +242,13 @@ async function handleCallResponse(message) {
             console.error('Message that caused error:', message);
             updateStatus('Failed to establish call: ' + err.message, true);
             await cleanupExistingConnection();
+            updateButtonStates('connected', 'idle');
         }
     } else {
         console.log('Call rejected by peer:', message.from_peer);
         updateStatus('Call rejected by peer', true);
         await cleanupExistingConnection();
+        updateButtonStates('connected', 'idle');
     }
 }
 

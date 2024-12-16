@@ -27,16 +27,23 @@ export function updateCallStatus(state, peer = null) {
     const statusMsg = peer ? `${state} with ${peer}` : state;
     updateStatus(statusMsg);
     
+    let callState = 'idle';
+    
     if (state === 'connected') {
         document.getElementById('audioStatus').textContent = 'Audio status: Connected';
         document.getElementById('connectionStatus').className = 'status success';
+        callState = 'incall';
     } else if (state === 'disconnected' || state === 'failed') {
         document.getElementById('audioStatus').textContent = 'Audio status: Not connected';
         document.getElementById('connectionStatus').className = 'status error';
+        callState = 'idle';
     } else if (state === 'ready') {
         document.getElementById('audioStatus').textContent = 'Audio status: Ready';
         document.getElementById('connectionStatus').className = 'status';
+        callState = 'idle';
     }
+    
+    updateButtonStates('connected', callState);
 }
 
 export function handlePeerListMessage(message) {
@@ -52,6 +59,15 @@ export function handlePeerListMessage(message) {
             <label for="peer_${peerId}">${peerId}</label>
         </div>
     `).join('');
+    
+    // Add change event listeners to checkboxes
+    const checkboxes = peerListDiv.querySelectorAll('input[type="checkbox"]');
+    checkboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', () => {
+            const selectedPeers = document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked');
+            updateButtonStates('connected', 'idle');
+        });
+    });
     
     console.log("Updated peer list HTML");
 }
@@ -141,10 +157,16 @@ function addAudioDebugButton() {
     document.body.appendChild(button);
 }
 
-// Initialize debug buttons
+// Add this new function
+export function initializeButtonStates() {
+    updateButtonStates('disconnected', 'idle');
+}
+
+// Modify the existing load event listener
 window.addEventListener('load', () => {
     addDebugButton();
     addAudioDebugButton();
+    initializeButtonStates();
 });
 
 // Add a new function to handle disconnect state
@@ -154,4 +176,37 @@ export function handleDisconnectState() {
     document.getElementById('startCallButton').disabled = true;
     document.getElementById('endCallButton').disabled = true;
     document.getElementById('disconnectButton').disabled = true;
+}
+
+export function updateButtonStates(connectionState, callState) {
+    const connectButton = document.getElementById('connectButton');
+    const startCallButton = document.getElementById('startCallButton');
+    const endCallButton = document.getElementById('endCallButton');
+    const disconnectButton = document.getElementById('disconnectButton');
+
+    // Default all buttons to disabled
+    startCallButton.disabled = true;
+    endCallButton.disabled = true;
+    disconnectButton.disabled = true;
+
+    switch (connectionState) {
+        case 'connected':
+            connectButton.disabled = true;
+            disconnectButton.disabled = false;
+            
+            // Enable call buttons only if peers are selected
+            const selectedPeers = document.querySelectorAll('#selectablePeerList input[type="checkbox"]:checked');
+            startCallButton.disabled = selectedPeers.length === 0;
+            
+            // Enable end call button only if in a call
+            endCallButton.disabled = callState !== 'incall';
+            break;
+            
+        case 'disconnected':
+            connectButton.disabled = false;
+            break;
+            
+        default:
+            connectButton.disabled = false;
+    }
 } 
