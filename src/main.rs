@@ -162,6 +162,7 @@ async fn main() -> Result<()> {
             server_config.sip_username,
             server_config.sip_password,
         ) {
+            info!("Initializing VoIP gateway with SIP server: {}:{}", sip_server, sip_port);
             let voip_gateway = VoipGateway::new(
                 &sip_server,
                 sip_port,
