@@ -104,14 +104,13 @@
     <script type="module" src="js/signaling.js"></script>
     <script type="module" src="js/ui.js"></script>
     <script type="module">
-        import { connect, disconnect } from './js/signaling.js';
+        import { connect } from './js/signaling.js';
         import { startCall, endCall, testAudioOutput } from './js/webrtc.js';
         
         window.addEventListener('load', () => {
             document.getElementById('connectButton').onclick = connect;
             document.getElementById('startCallButton').onclick = startCall;
             document.getElementById('endCallButton').onclick = endCall;
-            document.getElementById('disconnectButton').onclick = disconnect;
             document.getElementById('callSelectedButton').onclick = startCall;
             
             // Add the test audio function to the window object
@@ -125,6 +124,21 @@
                 await checkMediaDevices();
             } catch (err) {
                 console.error('Error checking media devices:', err);
+            }
+        });
+    </script>
+    <script type="module">
+        import { disconnect } from './js/signaling.js';
+        import { handleDisconnectState, updateStatus } from './js/ui.js';
+        
+        document.getElementById('disconnectButton').addEventListener('click', async () => {
+            try {
+                document.getElementById('disconnectButton').disabled = true;
+                await disconnect();
+                handleDisconnectState();
+            } catch (err) {
+                console.error('Error during disconnect:', err);
+                updateStatus('Disconnect failed: ' + err.message, true);
             }
         });
     </script>

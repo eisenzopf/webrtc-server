@@ -79,6 +79,9 @@ impl SignalingServer {
         let listener = TcpListener::bind(&self.address).await?;
         info!("Server successfully bound to {}", self.address);
 
+        // Start the stale peer cleanup task
+        self.handler.clone().start_stale_peer_cleanup().await;
+
         while let Ok((stream, addr)) = listener.accept().await {
             info!("New connection from: {}", addr);
             let handler = self.handler.clone();
@@ -112,50 +115,54 @@ impl SignalingServer {
         
         info!("New WebSocket connection from: {}", addr);
         
-        // Create temporary connection
         let ws_conn = WebSocketConnection::new_tungstenite(ws_sender.clone());
         handler.set_websocket_sender(temp_id.clone(), ws_conn).await?;
 
-        let result = async {
-            while let Some(msg) = ws_receiver.next().await {
-                match msg {
-                    Ok(msg) => {
-                        if msg.is_close() {
-                            info!("Received close frame from {}", addr);
-                            break;
-                        }
-                        
-                        if let Message::Text(text) = msg {
-                            let message: SignalingMessage = serde_json::from_str(&text)?;
-                            
-                            // Add debug logging for all messages
-                            debug!("Received message type: {:?} from peer {}", message, current_peer_id);
-                            
-                            // Update current peer and room IDs when joining
-                            if let SignalingMessage::Join { ref peer_id, ref room_id } = message {
-                                current_peer_id = peer_id.clone();
-                                current_room_id = room_id.clone();
-                                info!("Peer {} joined room {}", peer_id, room_id);
-                            }
-                            
-                            if state_manager.transition(&current_peer_id, ConnectionState::New).await {
-                                handler.handle_message(message, &current_peer_id).await?;
+        while let Some(msg) = ws_receiver.next().await {
+            match msg {
+                Ok(msg) => {
+                    if msg.is_close() {
+                        info!("Received close frame from {}", addr);
+                        if current_peer_id != temp_id && !current_room_id.is_empty() {
+                            if let Err(e) = handler.handle_disconnect(&current_peer_id, &current_room_id).await {
+                                error!("Error handling disconnect for peer {}: {}", current_peer_id, e);
                             }
                         }
-                    }
-                    Err(e) => {
-                        error!("WebSocket error for {}: {}", addr, e);
                         break;
                     }
+                    
+                    if let Message::Text(text) = msg {
+                        let message: SignalingMessage = serde_json::from_str(&text)?;
+                        
+                        // Add debug logging for all messages
+                        debug!("Received message type: {:?} from peer {}", message, current_peer_id);
+                        
+                        // Update current peer and room IDs when joining
+                        if let SignalingMessage::Join { ref peer_id, ref room_id } = message {
+                            current_peer_id = peer_id.clone();
+                            current_room_id = room_id.clone();
+                            info!("Peer {} joined room {}", peer_id, room_id);
+                        }
+                        
+                        if state_manager.transition(&current_peer_id, ConnectionState::New).await {
+                            handler.handle_message(message, &current_peer_id).await?;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("WebSocket error for {}: {}", addr, e);
+                    if current_peer_id != temp_id && !current_room_id.is_empty() {
+                        if let Err(e) = handler.handle_disconnect(&current_peer_id, &current_room_id).await {
+                            error!("Error handling disconnect for peer {}: {}", current_peer_id, e);
+                        }
+                    }
+                    break;
                 }
             }
-            Ok::<_, Error>(())
-        }.await;
+        }
 
-        // Handle disconnection cleanup
-        info!("WebSocket connection closed for {}", addr);
+        // Ensure cleanup happens on any type of disconnection
         if current_peer_id != temp_id && !current_room_id.is_empty() {
-            info!("Cleaning up disconnected peer {} from room {}", current_peer_id, current_room_id);
             if let Err(e) = handler.handle_disconnect(&current_peer_id, &current_room_id).await {
                 error!("Error handling disconnect for peer {}: {}", current_peer_id, e);
             }
@@ -164,7 +171,6 @@ impl SignalingServer {
         // Clean up temp connection if it still exists
         handler.remove_websocket_sender(&temp_id).await?;
 
-        result?;
         Ok(())
     }
 

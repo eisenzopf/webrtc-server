@@ -20,6 +20,8 @@ use std::time::SystemTime;
 use crate::utils::{Error, Result};
 use futures_util::SinkExt;
 use warp::ws::WebSocket;
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+use warp::ws::Message as WarpMessage;
 
 // Re-export room types
 pub use crate::room::state::{Room, MediaSettings, MediaType};
@@ -62,6 +64,24 @@ impl WebSocketConnection {
             WebSocketSenderType::Warp(sender) => {
                 let mut sender = sender.lock().await;
                 sender.send(warp::ws::Message::text(text)).await.map_err(|e| Error::WebSocketError(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn ping(&self) -> Result<()> {
+        match &self.sender {
+            WebSocketSenderType::Tungstenite(sender) => {
+                let mut sender = sender.lock().await;
+                sender.send(TungsteniteMessage::Ping(vec![]))
+                    .await
+                    .map_err(|e| Error::WebSocketError(format!("Tungstenite ping failed: {}", e)))?;
+            }
+            WebSocketSenderType::Warp(sender) => {
+                let mut sender = sender.lock().await;
+                sender.send(WarpMessage::ping(vec![]))
+                    .await
+                    .map_err(|e| Error::WebSocketError(format!("Warp ping failed: {}", e)))?;
             }
         }
         Ok(())

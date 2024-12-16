@@ -1,5 +1,5 @@
 // Add this import at the top of the file
-import { updateStatus } from './ui.js';
+import { updateStatus, updateCallStatus } from './ui.js';
 import { sendSignal } from './signaling.js';
 
 // Export shared state and functions
@@ -12,6 +12,7 @@ export let isInitiator = false;
 // Add at the top of the file with other variables
 let debugInterval = null;
 let isNegotiating = false;
+let dataChannel = null;
 
 export async function getIceServers() {
     try {
@@ -360,13 +361,9 @@ function handleConnectionStateChange() {
         });
     });
 
-    // Update UI based on connection state
-    if (states.connectionState === 'connected') {
-        updateStatus('Call connected!');
-    } else if (states.connectionState === 'failed') {
-        updateStatus('Call failed to connect', true);
-    } else if (states.connectionState === 'disconnected') {
-        updateStatus('Call disconnected', true);
+    // Log connection state changes more verbosely
+    if (states.connectionState === 'disconnected' || states.connectionState === 'failed' || states.connectionState === 'closed') {
+        console.log('Connection entered terminal state:', states.connectionState);
     }
 }
 
@@ -424,30 +421,41 @@ export async function startCall() {
 }
 
 export async function cleanupExistingConnection() {
-    if (debugInterval) {
-        clearInterval(debugInterval);
-        debugInterval = null;
-    }
-    
     if (peerConnection) {
+        console.log('Cleaning up existing peer connection...');
         try {
-            // Remove all tracks
+            // First remove all tracks
             const senders = peerConnection.getSenders();
-            const promises = senders.map(sender => 
+            const removeTrackPromises = senders.map(sender => 
                 peerConnection.removeTrack(sender)
             );
-            await Promise.all(promises);
+            await Promise.all(removeTrackPromises);
 
-            // Close data channels
-            if (dataChannel) {
-                dataChannel.close();
+            // Stop all transceivers
+            const transceivers = peerConnection.getTransceivers();
+            transceivers.forEach(transceiver => {
+                if (transceiver.stop) {
+                    transceiver.stop();
+                }
+            });
+
+            // Stop all tracks from senders
+            senders.forEach(sender => {
+                if (sender.track) {
+                    sender.track.stop();
+                }
+            });
+
+            // Close data channel if it exists
+            if (dataChannel && dataChannel.readyState !== 'closed') {
+                try {
+                    dataChannel.close();
+                } catch (err) {
+                    console.warn('Error closing data channel:', err);
+                }
                 dataChannel = null;
             }
-
-            // Close the connection
-            peerConnection.close();
-            peerConnection = null;
-
+        
             // Stop all local tracks
             if (localStream) {
                 localStream.getTracks().forEach(track => {
@@ -462,43 +470,52 @@ export async function cleanupExistingConnection() {
             if (localVideo) localVideo.srcObject = null;
             if (remoteVideo) remoteVideo.srcObject = null;
 
+            // Finally close the connection
+            peerConnection.close();
+            
+            console.log('Peer connection cleanup completed');
             updateStatus('Connection cleaned up');
+
         } catch (err) {
             console.error('Error during connection cleanup:', err);
-            updateStatus('Error during cleanup: ' + err.message);
+            throw new Error('Failed to cleanup WebRTC connection: ' + err.message);
+        } finally {
+            peerConnection = null;
         }
     }
 }
 
 export async function endCall() {
+    console.log('Ending call...');
     try {
-        if (peerConnection) {
-            // Send end call signal first
-            sendSignal('EndCall', {
-                room_id: document.getElementById('roomId').value,
-                peer_id: document.getElementById('peerId').value
-            });
-
-            // Then clean up the connection
-            peerConnection.close();
-            peerConnection = null;
+        // Clean up WebRTC connection
+        await cleanupExistingConnection();
         
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
-            }
-            
-            // Reset video elements
-            const localVideo = document.getElementById('localVideo');
-            const remoteVideo = document.getElementById('remoteVideo');
-            localVideo.srcObject = null;
-            remoteVideo.srcObject = null;
-            
-            updateStatus('Call ended');
-            document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
-        } else {
-            updateStatus('No active call to end');
+        // Additional cleanup for local stream
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
         }
+        
+        // Reset video elements
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (localVideo) localVideo.srcObject = null;
+        if (remoteVideo) remoteVideo.srcObject = null;
+        
+        // Send end call signal to other peers
+        sendSignal('EndCall', {
+            room_id: document.getElementById('roomId').value,
+            peer_id: document.getElementById('peerId').value
+        });
+        
+        // Update UI
+        updateCallStatus('ready');
+        document.getElementById('startCallButton').disabled = false;
+        document.getElementById('endCallButton').disabled = true;
+        document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
+        
+        console.log('Call ended successfully');
     } catch (err) {
         console.error('Error ending call:', err);
         updateStatus('Error ending call: ' + err.message, true);

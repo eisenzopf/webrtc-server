@@ -27,7 +27,9 @@ use webrtc::{
 use crate::media::{MediaRelayManager, MediaRelay};
 use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
+use std::time::Duration;
 
+#[derive(Clone)]
 pub struct MessageHandler {
     relay_manager: Arc<MediaRelayManager>,
     websocket_senders: Arc<RwLock<HashMap<String, WebSocketConnection>>>,
@@ -207,24 +209,23 @@ impl MessageHandler {
     pub async fn handle_disconnect(&self, peer_id: &str, room_id: &str) -> Result<()> {
         info!("Starting disconnect process for peer {} from room {}", peer_id, room_id);
         
-        // Log peer rooms state before removal
-        let peer_rooms_before = self.peer_rooms.read().await;
-        info!("Current peer rooms before removal: {:?}", *peer_rooms_before);
-        drop(peer_rooms_before);
-        
         // Remove WebSocket sender first
         self.remove_websocket_sender(peer_id).await?;
         
-        // Remove from relay manager first to close connections
+        // Remove from relay manager
         self.relay_manager.handle_peer_disconnect(peer_id, room_id).await?;
         
-        // Get remaining peers from peer_rooms before removal
+        // Remove from peer_rooms tracking
+        let removed = self.peer_rooms.write().await.remove(peer_id);
+        info!("Removed peer {} from room tracking: {:?}", peer_id, removed);
+        
+        // Get remaining peers after removal
         let remaining_peers: Vec<String> = self.peer_rooms
             .read()
             .await
             .iter()
             .filter_map(|(pid, rid)| {
-                if rid == room_id && pid != peer_id {
+                if rid == room_id {
                     Some(pid.clone())
                 } else {
                     None
@@ -232,25 +233,25 @@ impl MessageHandler {
             })
             .collect();
         
-        info!("Remaining peers before removal: {:?}", remaining_peers);
-        
-        // Remove from room tracking
-        let removed = self.peer_rooms.write().await.remove(peer_id);
-        info!("Removed peer {} from room tracking: {:?}", peer_id, removed);
-        
-        // Log the state for debugging
-        info!("Peer {} disconnected. Remaining peers in room {}: {:?}", peer_id, room_id, remaining_peers);
-        
-        // Create and broadcast peer list update
+        // Create peer list message
         let peer_list_msg = SignalingMessage::PeerList {
             room_id: room_id.to_string(),
-            peers: remaining_peers,
+            peers: remaining_peers.clone(),
         };
         
-        info!("Broadcasting peer list update: {:?}", peer_list_msg);
+        info!("Broadcasting updated peer list: {:?}", peer_list_msg);
         
-        // Broadcast to remaining peers
-        self.broadcast_message(&peer_list_msg).await?;
+        // Directly send to remaining peers instead of using broadcast_message
+        let json = serde_json::to_string(&peer_list_msg)?;
+        let senders = self.websocket_senders.read().await;
+        
+        for remaining_peer in &remaining_peers {
+            if let Some(ws_conn) = senders.get(remaining_peer) {
+                if let Err(e) = ws_conn.send(json.clone()).await {
+                    warn!("Failed to send updated peer list to {}: {}", remaining_peer, e);
+                }
+            }
+        }
         
         Ok(())
     }
@@ -315,7 +316,8 @@ impl MessageHandler {
         info!("Broadcasting message: {:?}", msg);
         info!("Current peer rooms state: {:?}", *peer_rooms);
         
-        // Only broadcast to peers in the same room
+        let mut failed_peers = Vec::new();
+        
         if let SignalingMessage::PeerList { room_id, .. } = msg {
             for (peer_id, ws_conn) in senders.iter() {
                 if let Some(peer_room) = peer_rooms.get(peer_id) {
@@ -323,11 +325,28 @@ impl MessageHandler {
                         info!("Sending to peer {} in room {}", peer_id, room_id);
                         if let Err(e) = ws_conn.send(json.clone()).await {
                             warn!("Failed to send message to peer {}: {}", peer_id, e);
+                            failed_peers.push(peer_id.clone());
                         }
                     }
                 }
             }
         }
+        
+        // Clean up any failed connections
+        drop(senders);  // Release the read lock before taking write lock
+        if !failed_peers.is_empty() {
+            let mut senders = self.websocket_senders.write().await;
+            for peer_id in failed_peers {
+                senders.remove(&peer_id);
+                if let Some(room_id) = peer_rooms.get(&peer_id) {
+                    // Handle disconnect for failed peers
+                    if let Err(e) = self.handle_disconnect(&peer_id, room_id).await {
+                        error!("Error handling disconnect for failed peer {}: {}", peer_id, e);
+                    }
+                }
+            }
+        }
+        
         Ok(())
     }
 
@@ -338,5 +357,60 @@ impl MessageHandler {
 
     pub async fn get_peer_room(&self, peer_id: &str) -> Option<String> {
         self.peer_rooms.read().await.get(peer_id).cloned()
+    }
+
+    pub async fn start_stale_peer_cleanup(self: Arc<Self>) {
+        tokio::spawn(async move {
+            let cleanup_interval = Duration::from_secs(2);
+            loop {
+                tokio::time::sleep(cleanup_interval).await;
+                
+                // Call validate_connections and log any errors
+                if let Err(e) = self.validate_connections().await {
+                    error!("Error during connection validation: {}", e);
+                }
+                
+                // Existing stale peer detection can remain as a backup
+                let senders = self.websocket_senders.read().await;
+                let mut stale_peers = Vec::new();
+                
+                for (peer_id, ws_conn) in senders.iter() {
+                    if let Err(_) = ws_conn.ping().await {
+                        stale_peers.push(peer_id.clone());
+                        warn!("Detected stale connection for peer: {}", peer_id);
+                    }
+                }
+                drop(senders);
+                
+                for peer_id in stale_peers {
+                    if let Some(room_id) = self.peer_rooms.read().await.get(&peer_id).cloned() {
+                        if let Err(e) = self.handle_disconnect(&peer_id, &room_id).await {
+                            error!("Error cleaning up stale peer {}: {}", peer_id, e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    pub async fn validate_connections(&self) -> Result<()> {
+        let senders = self.websocket_senders.read().await;
+        let mut stale_peers = Vec::new();
+        
+        for (peer_id, ws_conn) in senders.iter() {
+            if let Err(_) = ws_conn.ping().await {
+                stale_peers.push(peer_id.clone());
+            }
+        }
+        drop(senders);
+        
+        for peer_id in stale_peers {
+            if let Some(room_id) = self.peer_rooms.read().await.get(&peer_id).cloned() {
+                info!("Removing stale peer {} from room {}", peer_id, room_id);
+                self.handle_disconnect(&peer_id, &room_id).await?;
+            }
+        }
+        
+        Ok(())
     }
 } 

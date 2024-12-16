@@ -67,6 +67,11 @@ export async function connect() {
                         handleConnectionError(message);
                         break;
                         
+                    case 'EndCall':
+                        console.log('Received EndCall signal from peer:', message.peer_id);
+                        handleRemoteCallEnded(message.peer_id);
+                        break;
+                        
                     default:
                         console.warn('Unknown message type:', message.message_type);
                 }
@@ -103,28 +108,44 @@ export function sendSignal(type, data) {
 export async function disconnect() {
     if (ws && ws.readyState === WebSocket.OPEN) {
         isDisconnecting = true;
-        const disconnectMessage = {
-            message_type: 'Disconnect',
-            room_id: document.getElementById('roomId').value,
-            peer_id: document.getElementById('peerId').value
-        };
         
         try {
-            // Send disconnect message and wait for it to complete
+            // First cleanup the WebRTC connection
+            console.log('Starting disconnect sequence - cleaning up WebRTC connection...');
+            await cleanupExistingConnection();
+            
+            // Then send disconnect message
+            const disconnectMessage = {
+                message_type: 'Disconnect',
+                room_id: document.getElementById('roomId').value,
+                peer_id: document.getElementById('peerId').value
+            };
+            
+            console.log('Sending disconnect message:', disconnectMessage);
+            
+            // Send disconnect message and wait for confirmation
             await new Promise((resolve, reject) => {
                 ws.send(JSON.stringify(disconnectMessage));
                 
-                // Give the message a chance to be sent
-                setTimeout(resolve, 100);
+                // Add a longer timeout to ensure message is sent
+                setTimeout(resolve, 500);
             });
+            
+            console.log('Disconnect message sent successfully');
+            
         } catch (err) {
-            console.error('Error sending disconnect message:', err);
+            console.error('Error during disconnect sequence:', err);
+            updateStatus('Disconnect error: ' + err.message, true);
         } finally {
-            // Cleanup connection
-            await cleanupExistingConnection();
-            ws.close();
+            // Close websocket connection last
+            console.log('Closing WebSocket connection...');
+            if (ws) {
+                ws.close();
+            }
             updateStatus('Disconnected');
         }
+    } else {
+        console.log('WebSocket not connected, skipping disconnect sequence');
     }
 }
 
@@ -245,6 +266,36 @@ function handleConnectionError(message) {
     if (message.should_retry) {
         console.log('Attempting to reconnect...');
         // Implement reconnection logic here
+    }
+}
+
+async function handleRemoteCallEnded(peerId) {
+    console.log('Remote peer ended call:', peerId);
+    try {
+        // Clean up WebRTC connection
+        await cleanupExistingConnection();
+        
+        // Additional cleanup for local stream
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
+        }
+        
+        // Reset video elements
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (localVideo) localVideo.srcObject = null;
+        if (remoteVideo) remoteVideo.srcObject = null;
+        
+        // Update UI
+        updateCallStatus('Peer ended call');
+        document.getElementById('startCallButton').disabled = false;
+        document.getElementById('endCallButton').disabled = true;
+        document.getElementById('audioStatus').textContent = 'Audio status: Call ended by peer';
+        
+    } catch (err) {
+        console.error('Error handling remote call end:', err);
+        updateStatus('Error handling remote call end: ' + err.message, true);
     }
 }
 

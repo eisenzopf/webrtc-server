@@ -13,6 +13,7 @@ export function updateStatus(message, isError = false, peerConnection = null) {
     console.log('Status update:', {
         message, 
         isError, 
+        timestamp: new Date().toISOString(),
         peerConnection: peerConnection ? {
             iceConnectionState: peerConnection.iceConnectionState,
             connectionState: peerConnection.connectionState,
@@ -32,6 +33,9 @@ export function updateCallStatus(state, peer = null) {
     } else if (state === 'disconnected' || state === 'failed') {
         document.getElementById('audioStatus').textContent = 'Audio status: Not connected';
         document.getElementById('connectionStatus').className = 'status error';
+    } else if (state === 'ready') {
+        document.getElementById('audioStatus').textContent = 'Audio status: Ready';
+        document.getElementById('connectionStatus').className = 'status';
     }
 }
 
@@ -141,4 +145,13 @@ function addAudioDebugButton() {
 window.addEventListener('load', () => {
     addDebugButton();
     addAudioDebugButton();
-}); 
+});
+
+// Add a new function to handle disconnect state
+export function handleDisconnectState() {
+    updateCallStatus('disconnected');
+    document.getElementById('connectButton').disabled = false;
+    document.getElementById('startCallButton').disabled = true;
+    document.getElementById('endCallButton').disabled = true;
+    document.getElementById('disconnectButton').disabled = true;
+} 
