@@ -28,20 +28,24 @@ use crate::media::{MediaRelayManager, MediaRelay};
 use log::{info, error, debug, warn};
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
+use crate::media::recording::RecordingManager;
+use std::path::PathBuf;
 
 #[derive(Clone)]
 pub struct MessageHandler {
     relay_manager: Arc<MediaRelayManager>,
     websocket_senders: Arc<RwLock<HashMap<String, WebSocketConnection>>>,
     peer_rooms: Arc<RwLock<HashMap<String, String>>>,
+    recording_manager: Option<Arc<RecordingManager>>,
 }
 
 impl MessageHandler {
-    pub fn new(relay_manager: Arc<MediaRelayManager>) -> Self {
+    pub fn new(relay_manager: Arc<MediaRelayManager>, recording_path: Option<PathBuf>) -> Self {
         Self {
             relay_manager,
             websocket_senders: Arc::new(RwLock::new(HashMap::new())),
             peer_rooms: Arc::new(RwLock::new(HashMap::new())),
+            recording_manager: recording_path.map(|path| Arc::new(RecordingManager::new(path))),
         }
     }
 
@@ -175,6 +179,14 @@ impl MessageHandler {
                 Ok(())
             },
             SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted, reason, sdp } => {
+                if accepted {
+                    if let Some(recording_manager) = &self.recording_manager {
+                        recording_manager.start_call_recording(
+                            &room_id,
+                            vec![from_peer.clone(), to_peer.clone()]
+                        ).await?;
+                    }
+                }
                 debug!("Handling call response from {} to {}: accepted={}", from_peer, to_peer, accepted);
                 if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
                     let message = SignalingMessage::CallResponse {

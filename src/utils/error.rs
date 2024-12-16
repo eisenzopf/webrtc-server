@@ -6,6 +6,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use std::io::Error as IoError;
 use turn::Error as TurnError;
 use serde_json::Error as SerdeError;
+use webrtc::util::Error as WebRTCUtilError;
 
 #[derive(Debug)]
 pub enum Error {
@@ -83,6 +84,12 @@ impl From<AddrParseError> for Error {
 impl From<warp::Error> for Error {
     fn from(err: warp::Error) -> Self {
         Error::WarpError(err.to_string())
+    }
+}
+
+impl From<WebRTCUtilError> for Error {
+    fn from(err: WebRTCUtilError) -> Self {
+        Error::WebRTCError(err.to_string())
     }
 }
 

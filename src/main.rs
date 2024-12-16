@@ -21,6 +21,7 @@ use serde::Serialize;
 use webrtc_server::signaling::server::ServerConfig;
 use warp::cors::CorsForbidden;
 use std::env;
+use std::path::PathBuf;
 
 #[derive(Serialize)]
 struct TurnCredentials {
@@ -33,6 +34,10 @@ struct TurnCredentials {
 }
 
 async fn start_server() -> Result<()> {
+    // Create recordings directory
+    let recording_path = PathBuf::from("recordings");
+    std::fs::create_dir_all(&recording_path)?;
+
     let config = ServerConfig {
         stun_server: "192.168.1.68".to_string(),
         stun_port: 3478,
@@ -41,6 +46,7 @@ async fn start_server() -> Result<()> {
         turn_username: "testuser".to_string(),
         turn_password: "testpass".to_string(),
         ws_port: 8080,
+        recording_path: Some(recording_path.clone()),
     };
 
     // Create MediaRelayManager with proper arguments
@@ -104,6 +110,10 @@ async fn main() -> Result<()> {
         .parse::<u16>()
         .expect("Invalid TURN port");
 
+    // Create recordings directory
+    let recording_path = PathBuf::from("recordings");
+    std::fs::create_dir_all(&recording_path)?;
+
     // Create MediaRelayManager for debug server
     let media_relay = Arc::new(MediaRelayManager::new(
         turn_server.clone(),
@@ -122,6 +132,7 @@ async fn main() -> Result<()> {
         turn_username: "testuser".to_string(),
         turn_password: "testpass".to_string(),
         ws_port: 8080,
+        recording_path: Some(recording_path),
     };
 
     // Create SignalingServer first

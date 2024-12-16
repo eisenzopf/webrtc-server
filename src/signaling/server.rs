@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use chrono::Utc;
 use warp::ws::Message as WarpMessage;
+use std::path::PathBuf;
 
 pub struct SignalingServer {
     pub address: String,
@@ -45,6 +46,7 @@ pub struct ServerConfig {
     pub turn_username: String,
     pub turn_password: String,
     pub ws_port: u16,
+    pub recording_path: Option<PathBuf>,
 }
 
 impl SignalingServer {
@@ -64,7 +66,10 @@ impl SignalingServer {
         
         Ok(SignalingServer {
             address: format!("0.0.0.0:{}", config.ws_port),
-            handler: Arc::new(MessageHandler::new(relay_manager)),
+            handler: Arc::new(MessageHandler::new(
+                relay_manager,
+                config.recording_path.clone()
+            )),
             config,
             turn_secret,
             turn_server,
