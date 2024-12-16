@@ -342,11 +342,7 @@ async function handleEndCall(message) {
             clearInterval(window.audioLevelInterval);
             window.audioLevelInterval = null;
         }
-        if (window.audioStateInterval) {
-            clearInterval(window.audioStateInterval);
-            window.audioStateInterval = null;
-        }
-        
+
         // Close audio context if it exists
         if (window.audioContext) {
             await window.audioContext.close();

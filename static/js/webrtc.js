@@ -262,24 +262,8 @@ function handleTrackEvent(event) {
             window.audioLevelInterval = setInterval(() => {
                 analyser.getByteFrequencyData(dataArray);
                 const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                console.log('Audio level:', average);
                 updateAudioMeter(average);
             }, 100);
-            
-            window.audioStateInterval = setInterval(() => {
-                console.log('Audio state:', {
-                    time: audioElement.currentTime,
-                    paused: audioElement.paused,
-                    muted: audioElement.muted,
-                    volume: audioElement.volume,
-                    tracks: remoteStream.getTracks().map(t => ({
-                        kind: t.kind,
-                        enabled: t.enabled,
-                        muted: t.muted,
-                        readyState: t.readyState
-                    }))
-                });
-            }, 5000);
         }
     }
 }

@@ -63,7 +63,6 @@ function monitorAudioState(stream) {
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     let isLocal = stream === localStream;
-    console.log(`Monitoring ${isLocal ? 'local' : 'remote'} audio stream:`, stream.id);
     
     function checkAudioLevel() {
         analyser.getByteFrequencyData(dataArray);
@@ -75,23 +74,10 @@ function monitorAudioState(stream) {
         } else {
             meter.updateRemoteLevel(normalizedLevel);
         }
-
-        if (normalizedLevel > 0.01) {
-            console.log(`Audio level (${isLocal ? 'local' : 'remote'}):`, {
-                level: normalizedLevel.toFixed(3),
-                streamId: stream.id,
-                tracks: stream.getTracks().map(t => ({
-                    id: t.id,
-                    kind: t.kind,
-                    enabled: t.enabled,
-                    muted: t.muted,
-                    readyState: t.readyState
-                }))
-            });
-        }
+        
         requestAnimationFrame(checkAudioLevel);
     }
-    
+
     checkAudioLevel();
     
     if (audioContext.state === 'suspended') {
