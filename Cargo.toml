@@ -28,6 +28,7 @@ chrono = { version = "0.4", features = ["serde"] }
 hmac = "0.12"
 sha1 = "0.10"
 base64 = "0.21"  # Also needed for base64 encoding in TurnCredentials
+rsip = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"

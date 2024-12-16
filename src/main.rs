@@ -22,6 +22,7 @@ use webrtc_server::signaling::server::ServerConfig;
 use warp::cors::CorsForbidden;
 use std::env;
 use std::path::PathBuf;
+use crate::voip::VoipGateway;
 
 #[derive(Serialize)]
 struct TurnCredentials {
@@ -47,6 +48,11 @@ async fn start_server() -> Result<()> {
         turn_password: "testpass".to_string(),
         ws_port: 8080,
         recording_path: Some(recording_path.clone()),
+        sip_enabled: true,
+        sip_server: Some("sip.example.com".to_string()),
+        sip_port: Some(5060),
+        sip_username: Some("sipuser".to_string()),
+        sip_password: Some("sippass".to_string()),
     };
 
     // Create MediaRelayManager with proper arguments
@@ -133,15 +139,45 @@ async fn main() -> Result<()> {
         turn_password: "testpass".to_string(),
         ws_port: 8080,
         recording_path: Some(recording_path),
+        sip_enabled: true,
+        sip_server: Some("sip.example.com".to_string()),
+        sip_port: Some(5060),
+        sip_username: Some("sipuser".to_string()),
+        sip_password: Some("sippass".to_string()),
     };
 
     // Create SignalingServer first
     let server = SignalingServer::new(
-        server_config,
+        server_config.clone(),
         turn_server.clone(),
         turn_port,
         turn_secret.clone()
     ).await?;
+
+    // Initialize VoIP gateway if enabled
+    if server_config.sip_enabled {
+        if let (Some(sip_server), Some(sip_port), Some(sip_user), Some(sip_pass)) = (
+            server_config.sip_server,
+            server_config.sip_port,
+            server_config.sip_username,
+            server_config.sip_password,
+        ) {
+            let voip_gateway = VoipGateway::new(
+                &sip_server,
+                sip_port,
+                &sip_user,
+                &sip_pass,
+                server.handler.clone(),
+            ).await?;
+
+            // Start VoIP gateway in a separate task
+            tokio::spawn(async move {
+                if let Err(e) = voip_gateway.start().await {
+                    error!("VoIP gateway error: {}", e);
+                }
+            });
+        }
+    }
 
     // Create routes
     let ws_route = server.ws_route();

@@ -47,6 +47,11 @@ pub struct ServerConfig {
     pub turn_password: String,
     pub ws_port: u16,
     pub recording_path: Option<PathBuf>,
+    pub sip_enabled: bool,
+    pub sip_server: Option<String>,
+    pub sip_port: Option<u16>,
+    pub sip_username: Option<String>,
+    pub sip_password: Option<String>,
 }
 
 impl SignalingServer {
