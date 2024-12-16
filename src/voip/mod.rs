@@ -73,7 +73,7 @@ impl VoIPHandler {
             let (len, addr) = self.socket.recv_from(&mut buf).await?;
             let data = &buf[..len];
             
-            match rsip::Message::try_from(data) {
+            match SipMessage::try_from(data) {
                 Ok(message) => {
                     self.handle_sip_message(message, addr).await?;
                 }
@@ -85,7 +85,7 @@ impl VoIPHandler {
     }
 
     async fn handle_invite(&self, request: Request, addr: SocketAddr) -> Result<()> {
-        let call_id = request.call_id_header()?.typed()?.value.to_string();
+        let call_id = request.call_id_header()?.value().to_string();
         let peer_id = Uuid::new_v4().to_string();
         
         // Create new session
@@ -95,7 +95,7 @@ impl VoIPHandler {
         let (bridge, rtp_sender) = self.media_manager.create_bridge(&call_id).await;
         
         // Create WebRTC peer through message handler
-        self.message_handler.handle_connect(&peer_id, "default").await?;
+        self.message_handler.handle_voip_connect(&peer_id, "default").await?;
         
         // Store mapping
         self.active_calls.write().await.insert(call_id.clone(), peer_id.clone());
@@ -113,7 +113,7 @@ impl VoIPHandler {
     }
 
     async fn handle_bye(&self, request: Request, addr: SocketAddr) -> Result<()> {
-        let call_id = request.call_id_header()?.typed()?.value.to_string();
+        let call_id = request.call_id_header()?.value().to_string();
         
         // Clean up session and media bridge
         if let Some(peer_id) = self.active_calls.write().await.remove(&call_id) {

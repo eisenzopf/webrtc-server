@@ -4,7 +4,8 @@ use tokio::sync::mpsc;
 use webrtc::rtp::packet::Packet as RTPPacket;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_remote::TrackRemote;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTCRtpCodecCapability};
+use webrtc::track::track_local::TrackLocalWriter;
 use log::{debug, error};
 use std::collections::HashMap;
 
@@ -55,12 +56,12 @@ impl MediaBridge {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        let mut receiver = self.rtp_receiver.clone();
+        let mut rtp_receiver = std::mem::replace(&mut self.rtp_receiver, mpsc::channel(1000).1);
         let local_track = self.local_track.clone();
 
         // Forward SIP RTP packets to WebRTC
         tokio::spawn(async move {
-            while let Some(packet) = receiver.recv().await {
+            while let Some(packet) = rtp_receiver.recv().await {
                 if let Some(track) = &local_track {
                     if let Err(e) = track.write_rtp(&packet).await {
                         error!("Failed to forward SIP RTP packet to WebRTC: {}", e);
@@ -75,12 +76,15 @@ impl MediaBridge {
     pub fn get_rtp_parameters(&self) -> RTCRtpCodecParameters {
         // Default to opus for audio
         RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                clock_rate: 48000,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+                rtcp_feedback: vec![],
+            },
             payload_type: 111,
-            mime_type: "audio/opus".to_string(),
-            clock_rate: 48000,
-            channels: 2,
-            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-            ..Default::default()
+            stats_id: String::new(),
         }
     }
 }

@@ -31,6 +31,9 @@ use std::time::Duration;
 use crate::media::recording::RecordingManager;
 use std::path::PathBuf;
 use webrtc::rtp::packet::Packet as RTPPacket;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 
 #[derive(Clone)]
 pub struct MessageHandler {
@@ -474,6 +477,43 @@ impl MessageHandler {
                 ).await?;
             }
         }
+        Ok(())
+    }
+
+    pub(crate) async fn handle_voip_rtp(&self, peer_id: &str, packet: RTPPacket) -> Result<()> {
+        self.handle_rtp_packet("default", peer_id, &packet).await?;
+        Ok(())
+    }
+
+    pub async fn handle_voip_connect(&self, peer_id: &str, room_id: &str) -> Result<()> {
+        // Create a new WebRTC peer connection for the VoIP call
+        let relay = self.relay_manager.create_relay(peer_id.to_string()).await?;
+        
+        // Add audio transceiver for VoIP
+        let _ = relay.peer_connection.add_transceiver_from_kind(
+            RTPCodecType::Audio,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendrecv,
+                send_encodings: vec![],
+            }),
+        ).await?;
+
+        // Create and send offer
+        let offer = relay.peer_connection.create_offer(None).await?;
+        relay.peer_connection.set_local_description(offer.clone()).await?;
+
+        // Send offer to the peer through signaling
+        let message = SignalingMessage::Offer {
+            from_peer: "voip-gateway".to_string(),
+            to_peer: peer_id.to_string(),
+            room_id: room_id.to_string(),
+            sdp: offer.sdp,
+        };
+
+        if let Some(ws_sender) = self.get_websocket_sender(peer_id).await? {
+            ws_sender.send(serde_json::to_string(&message)?).await?;
+        }
+
         Ok(())
     }
 } 

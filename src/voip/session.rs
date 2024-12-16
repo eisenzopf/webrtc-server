@@ -7,6 +7,8 @@ use rsip::{
     Headers,
     typed::{Via, From, To, Contact, CSeq},
     Version,
+    Uri,
+    param::Tag,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -15,6 +17,7 @@ use uuid::Uuid;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp::packet::Packet as RTPPacket;
 use log::{info, debug, error};
+use std::str::FromStr;
 
 pub struct SipSession {
     call_id: String,
@@ -48,11 +51,11 @@ impl SipSession {
     }
 
     pub fn from_request(request: &Request) -> Result<Self> {
-        let call_id = request.call_id_header()?.typed()?.value.to_string();
+        let call_id = request.call_id_header()?.value().to_string();
         let mut session = Self::new(call_id);
         
         if let Ok(to) = request.to_header()?.typed() {
-            if let Some(tag) = to.tag.clone() {
+            if let Some(tag) = to.tag() {
                 session.remote_tag = Some(tag.to_string());
             }
         }
@@ -75,7 +78,7 @@ impl SipSession {
         
         // Create To header with our tag
         let mut to = request.to_header()?.typed()?;
-        to.with_tag(self.local_tag.clone());
+        to.with_tag(Tag::new(self.local_tag.clone()));
         headers.push(to.into());
         
         // Copy Call-ID
@@ -85,7 +88,11 @@ impl SipSession {
         headers.push(request.cseq_header()?.clone().into());
         
         // Add Contact header
-        let contact = Contact::new(self.local_tag.clone());
+        let uri = Uri::from((
+            rsip::Scheme::Sip,
+            rsip::Host::from(self.local_tag.clone())
+        ));
+        let contact = Contact::from(uri);
         headers.push(contact.into());
 
         Ok(Response {

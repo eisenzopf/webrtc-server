@@ -22,7 +22,7 @@ use webrtc_server::signaling::server::ServerConfig;
 use warp::cors::CorsForbidden;
 use std::env;
 use std::path::PathBuf;
-use crate::voip::VoipGateway;
+use webrtc_server::voip::VoipGateway;
 
 #[derive(Serialize)]
 struct TurnCredentials {
