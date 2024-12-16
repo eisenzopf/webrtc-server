@@ -315,14 +315,112 @@ async function handleRemoteCallEnded(peerId) {
         if (remoteVideo) remoteVideo.srcObject = null;
         
         // Update UI
-        updateCallStatus('Peer ended call');
+        updateCallStatus('disconnected');
         document.getElementById('startCallButton').disabled = false;
         document.getElementById('endCallButton').disabled = true;
         document.getElementById('audioStatus').textContent = 'Audio status: Call ended by peer';
+        updateButtonStates('connected', 'idle');
+        
+        // Reset peer checkboxes and current call peer
+        setCurrentCallPeer(null);
+        resetAllPeerCheckboxes();
         
     } catch (err) {
         console.error('Error handling remote call end:', err);
         updateStatus('Error handling remote call end: ' + err.message, true);
+        // Ensure cleanup even on error
+        setCurrentCallPeer(null);
+        resetAllPeerCheckboxes();
+    }
+}
+
+async function handleEndCall(message) {
+    console.log('Received end call signal:', message);
+    try {
+        // Clear any existing audio monitoring intervals
+        if (window.audioLevelInterval) {
+            clearInterval(window.audioLevelInterval);
+            window.audioLevelInterval = null;
+        }
+        if (window.audioStateInterval) {
+            clearInterval(window.audioStateInterval);
+            window.audioStateInterval = null;
+        }
+        
+        // Close audio context if it exists
+        if (window.audioContext) {
+            await window.audioContext.close();
+            window.audioContext = null;
+        }
+
+        // Clean up WebRTC connection
+        await cleanupExistingConnection();
+        
+        // Additional cleanup for local stream
+        if (localStream) {
+            localStream.getTracks().forEach(track => {
+                track.stop();
+                track.enabled = false;
+            });
+            localStream = null;
+        }
+        
+        // Clean up remote audio
+        const remoteAudio = document.getElementById('remoteAudio');
+        if (remoteAudio && remoteAudio.srcObject) {
+            const remoteTracks = remoteAudio.srcObject.getTracks();
+            remoteTracks.forEach(track => {
+                track.stop();
+                track.enabled = false;
+            });
+            remoteAudio.srcObject = null;
+        }
+        
+        // Stop any remaining tracks from the peer connection
+        if (peerConnection) {
+            peerConnection.getSenders().forEach(sender => {
+                if (sender.track) {
+                    sender.track.stop();
+                    sender.track.enabled = false;
+                }
+            });
+            
+            peerConnection.getReceivers().forEach(receiver => {
+                if (receiver.track) {
+                    receiver.track.stop();
+                    receiver.track.enabled = false;
+                }
+            });
+        }
+        
+        // Reset video elements
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (localVideo) localVideo.srcObject = null;
+        if (remoteVideo) remoteVideo.srcObject = null;
+        
+        // Update UI - Make sure we're setting the correct state
+        updateStatus('Call ended by peer');
+        updateCallStatus('disconnected');
+        document.getElementById('audioStatus').textContent = 'Audio status: Not in call';
+        
+        // Force button states
+        document.getElementById('startCallButton').disabled = false;
+        document.getElementById('endCallButton').disabled = true;
+        updateButtonStates('connected', 'idle');
+        
+        // Reset peer checkboxes and current call peer
+        setCurrentCallPeer(null);
+        resetAllPeerCheckboxes();
+        
+    } catch (err) {
+        console.error('Error handling end call:', err);
+        updateStatus('Error handling end call: ' + err.message, true);
+        // Ensure cleanup even on error
+        setCurrentCallPeer(null);
+        resetAllPeerCheckboxes();
+        updateCallStatus('disconnected');
+        updateButtonStates('connected', 'idle');
     }
 }
 

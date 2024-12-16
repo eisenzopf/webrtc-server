@@ -242,13 +242,7 @@ function debugAudioState() {
 }
 
 function handleTrackEvent(event) {
-    console.log('Received remote track:', {
-        kind: event.track.kind,
-        id: event.track.id,
-        enabled: event.track.enabled,
-        muted: event.track.muted,
-        readyState: event.track.readyState
-    });
+    console.log('Received remote track:', event.track);
     
     const remoteStream = event.streams[0];
     if (remoteStream) {
@@ -256,25 +250,23 @@ function handleTrackEvent(event) {
         if (audioElement) {
             audioElement.srcObject = remoteStream;
             audioElement.play().catch(e => console.error('Audio play failed:', e));
-            console.log('Set remote stream to audio element');
             
-            // Add audio level monitoring
-            const audioContext = new AudioContext();
-            const source = audioContext.createMediaStreamSource(remoteStream);
-            const analyser = audioContext.createAnalyser();
+            // Store audio context globally
+            window.audioContext = new AudioContext();
+            const source = window.audioContext.createMediaStreamSource(remoteStream);
+            const analyser = window.audioContext.createAnalyser();
             source.connect(analyser);
             
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
             
-            setInterval(() => {
+            window.audioLevelInterval = setInterval(() => {
                 analyser.getByteFrequencyData(dataArray);
                 const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
                 console.log('Audio level:', average);
                 updateAudioMeter(average);
             }, 100);
             
-            // Monitor audio state
-            setInterval(() => {
+            window.audioStateInterval = setInterval(() => {
                 console.log('Audio state:', {
                     time: audioElement.currentTime,
                     paused: audioElement.paused,
@@ -342,28 +334,45 @@ function handleIceConnectionStateChange() {
 function handleConnectionStateChange() {
     if (!peerConnection) return;
     
-    const states = {
+    // Store state information before any cleanup
+    const currentState = {
         connectionState: peerConnection.connectionState,
         iceConnectionState: peerConnection.iceConnectionState,
         iceGatheringState: peerConnection.iceGatheringState,
         signalingState: peerConnection.signalingState
     };
     
-    console.log('Connection state changed:', states);
+    console.log('Connection state changed:', currentState);
 
-    // Log all tracks
-    const receivers = peerConnection.getReceivers();
-    receivers.forEach(receiver => {
-        console.log(`${receiver.track.kind} receiver track:`, {
-            enabled: receiver.track.enabled,
-            muted: receiver.track.muted,
-            readyState: receiver.track.readyState
+    // Handle terminal states
+    if (currentState.connectionState === 'disconnected' || currentState.connectionState === 'failed' || currentState.connectionState === 'closed') {
+        console.log('Connection entered terminal state:', currentState.connectionState);
+        
+        // Remove the handler immediately to prevent further state changes
+        const pc = peerConnection;
+        if (pc) {
+            pc.onconnectionstatechange = null;
+            pc.oniceconnectionstatechange = null;
+        }
+        
+        // Perform cleanup
+        cleanupExistingConnection().catch(console.error);
+        
+        // Reset UI and connection state
+        updateCallStatus('disconnected');
+        updateButtonStates('connected', 'idle');
+        document.getElementById('startCallButton').disabled = false;
+        document.getElementById('endCallButton').disabled = true;
+        
+        // Reset peer selection
+        resetAllPeerCheckboxes();
+        setCurrentCallPeer(null);
+        
+        // Enable peer checkboxes
+        const peerCheckboxes = document.querySelectorAll('#selectablePeerList input[type="checkbox"]');
+        peerCheckboxes.forEach(checkbox => {
+            checkbox.disabled = false;
         });
-    });
-
-    // Log connection state changes more verbosely
-    if (states.connectionState === 'disconnected' || states.connectionState === 'failed' || states.connectionState === 'closed') {
-        console.log('Connection entered terminal state:', states.connectionState);
     }
 }
 
@@ -428,6 +437,13 @@ export async function cleanupExistingConnection() {
     if (peerConnection) {
         console.log('Cleaning up existing peer connection...');
         try {
+            // Remove all event listeners
+            peerConnection.oniceconnectionstatechange = null;
+            peerConnection.onconnectionstatechange = null;
+            peerConnection.onsignalingstatechange = null;
+            peerConnection.onicecandidate = null;
+            peerConnection.ontrack = null;
+            
             // First remove all tracks
             const senders = peerConnection.getSenders();
             const removeTrackPromises = senders.map(sender => 
@@ -492,6 +508,14 @@ export async function cleanupExistingConnection() {
 export async function endCall() {
     console.log('Ending call...');
     try {
+        // Send end call signal to other peers before cleanup
+        sendSignal('EndCall', {
+            room_id: document.getElementById('roomId').value,
+            from_peer: document.getElementById('peerId').value,
+            to_peer: remotePeerId,  // Add this to specify which peer to end the call with
+            peer_id: document.getElementById('peerId').value
+        });
+        
         // Clean up WebRTC connection
         await cleanupExistingConnection();
         
@@ -506,12 +530,6 @@ export async function endCall() {
         const remoteVideo = document.getElementById('remoteVideo');
         if (localVideo) localVideo.srcObject = null;
         if (remoteVideo) remoteVideo.srcObject = null;
-        
-        // Send end call signal to other peers
-        sendSignal('EndCall', {
-            room_id: document.getElementById('roomId').value,
-            peer_id: document.getElementById('peerId').value
-        });
         
         // Update UI
         updateCallStatus('disconnected');
@@ -818,9 +836,14 @@ export function setupConnectionStateHandler(pc) {
         
         switch (pc.connectionState) {
             case 'disconnected':
+                handleDisconnect(remotePeerId);
+                // Remove the handler after disconnect to prevent further state changes
+                pc.onconnectionstatechange = null;
+                break;
             case 'failed':
             case 'closed':
-                handleDisconnect(remotePeerId);
+                // These states should not trigger if we properly cleaned up
+                console.log('Connection entered terminal state:', pc.connectionState);
                 break;
             case 'connected':
                 updateStatus('Connected to peer');
