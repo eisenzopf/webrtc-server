@@ -7,7 +7,8 @@ import {
     updateButtonStates, 
     updateCallStatus,
     updatePeerCheckboxState,
-    resetAllPeerCheckboxes 
+    resetAllPeerCheckboxes,
+    setCurrentCallPeer 
 } from './ui.js';
 
 let ws = null;
@@ -197,7 +198,8 @@ async function handleCallRequest(message) {
             updateStatus('Call connected');
             updateCallStatus('connected', message.from_peer);
             updateButtonStates('connected', 'incall');
-            // Disable the checkbox for the connected peer
+            // Set current call peer and update checkbox
+            setCurrentCallPeer(message.from_peer);
             updatePeerCheckboxState(message.from_peer, true, true);
             
         } catch (err) {
@@ -240,7 +242,8 @@ async function handleCallResponse(message) {
             updateStatus('Call connected');
             updateCallStatus('connected', message.from_peer);
             updateButtonStates('connected', 'incall');
-            // Disable the checkbox for the connected peer
+            // Set current call peer and update checkbox
+            setCurrentCallPeer(message.from_peer);
             updatePeerCheckboxState(message.from_peer, true, true);
             
             // Apply any pending ICE candidates
@@ -255,14 +258,14 @@ async function handleCallResponse(message) {
             updateStatus('Failed to establish call: ' + err.message, true);
             await cleanupExistingConnection();
             updateButtonStates('connected', 'idle');
-            resetAllPeerCheckboxes();  // Reset checkboxes on error
+            resetAllPeerCheckboxes();
         }
     } else {
         console.log('Call rejected by peer:', message.from_peer);
         updateStatus('Call rejected by peer', true);
         await cleanupExistingConnection();
         updateButtonStates('connected', 'idle');
-        resetAllPeerCheckboxes();  // Reset checkboxes when call is rejected
+        resetAllPeerCheckboxes();
     }
 }
 

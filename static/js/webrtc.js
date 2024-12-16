@@ -1,5 +1,5 @@
 // Add this import at the top of the file
-import { updateStatus, updateCallStatus, updateButtonStates, resetAllPeerCheckboxes } from './ui.js';
+import { updateStatus, updateCallStatus, updateButtonStates, resetAllPeerCheckboxes, setCurrentCallPeer } from './ui.js';
 import { sendSignal } from './signaling.js';
 
 // Export shared state and functions
@@ -522,13 +522,15 @@ export async function endCall() {
         console.log('Call ended successfully');
         updateButtonStates('connected', 'idle');
         
-        // Reset all peer checkboxes to enabled state
+        // Reset current call peer and checkboxes
+        setCurrentCallPeer(null);
         resetAllPeerCheckboxes();
         
     } catch (err) {
         console.error('Error ending call:', err);
         updateStatus('Error ending call: ' + err.message, true);
-        // Still try to reset checkboxes even if there's an error
+        // Still try to reset peer state even if there's an error
+        setCurrentCallPeer(null);
         resetAllPeerCheckboxes();
     }
 }
