@@ -30,6 +30,7 @@ use serde::{Serialize, Deserialize};
 use std::time::Duration;
 use crate::media::recording::RecordingManager;
 use std::path::PathBuf;
+use webrtc::rtp::packet::Packet as RTPPacket;
 
 #[derive(Clone)]
 pub struct MessageHandler {
@@ -179,14 +180,7 @@ impl MessageHandler {
                 Ok(())
             },
             SignalingMessage::CallResponse { room_id, from_peer, to_peer, accepted, reason, sdp } => {
-                if accepted {
-                    if let Some(recording_manager) = &self.recording_manager {
-                        recording_manager.start_call_recording(
-                            &room_id,
-                            vec![from_peer.clone(), to_peer.clone()]
-                        ).await?;
-                    }
-                }
+                self.handle_call_response(&room_id, &from_peer, &to_peer, accepted).await?;
                 debug!("Handling call response from {} to {}: accepted={}", from_peer, to_peer, accepted);
                 if let Some(ws_sender) = self.websocket_senders.read().await.get(&to_peer) {
                     let message = SignalingMessage::CallResponse {
@@ -423,6 +417,63 @@ impl MessageHandler {
             }
         }
         
+        Ok(())
+    }
+
+    async fn handle_call_request(&self, room_id: &str, from_peer: &str, to_peer: &str) -> Result<()> {
+        // Start recording if recording manager exists
+        if let Some(recording_manager) = &self.recording_manager {
+            recording_manager.start_call_recording(
+                room_id,
+                vec![from_peer.to_string(), to_peer.to_string()]
+            ).await?;
+        }
+
+        // Forward the call request to the target peer
+        if let Some(ws_sender) = self.websocket_senders.read().await.get(to_peer) {
+            let message = SignalingMessage::CallRequest {
+                room_id: room_id.to_string(),
+                from_peer: from_peer.to_string(),
+                to_peers: vec![to_peer.to_string()],
+                sdp: String::new(), // You might want to pass the actual SDP here
+            };
+            ws_sender.send(serde_json::to_string(&message)?).await?;
+            debug!("Forwarded call request to {}", to_peer);
+        }
+
+        Ok(())  // Add explicit return
+    }
+
+    async fn handle_participant_join(&self, room_id: &str, peer_id: &str) -> Result<()> {
+        if let Some(recording_manager) = &self.recording_manager {
+            recording_manager.add_participant(room_id, peer_id).await?;
+        }
+        Ok(())
+    }
+
+    // Update the RTP packet handling to include peer_id
+    async fn handle_rtp_packet(&self, room_id: &str, peer_id: &str, packet: &RTPPacket) -> Result<()> {
+        if let Some(recording_manager) = &self.recording_manager {
+            recording_manager.write_rtp_packet(room_id, peer_id, packet).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn handle_call_response(
+        &self,
+        room_id: &str,
+        from_peer: &str,
+        to_peer: &str,
+        accepted: bool,
+    ) -> Result<()> {
+        if accepted {
+            if let Some(recording_manager) = &self.recording_manager {
+                recording_manager.start_call_recording(
+                    room_id,
+                    vec![from_peer.to_string(), to_peer.to_string()]
+                ).await?;
+            }
+        }
         Ok(())
     }
 } 

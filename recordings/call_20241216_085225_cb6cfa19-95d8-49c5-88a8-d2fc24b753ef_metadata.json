@@ -1,0 +1,17 @@
+{
+  "call_id": "cb6cfa19-95d8-49c5-88a8-d2fc24b753ef",
+  "room_id": "test-room",
+  "start_time": "2024-12-16T08:52:25.863935+00:00",
+  "participants": {
+    "peer_pm6y0t62e": {
+      "peer_id": "peer_pm6y0t62e",
+      "join_time": "2024-12-16T08:52:25.863918+00:00",
+      "file_path": "call_20241216_085225_cb6cfa19-95d8-49c5-88a8-d2fc24b753ef_peer_pm6y0t62e.rtp"
+    },
+    "peer_9x1s23iix": {
+      "peer_id": "peer_9x1s23iix",
+      "join_time": "2024-12-16T08:52:25.863388+00:00",
+      "file_path": "call_20241216_085225_cb6cfa19-95d8-49c5-88a8-d2fc24b753ef_peer_9x1s23iix.rtp"
+    }
+  }
+}

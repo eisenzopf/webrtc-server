@@ -22,6 +22,8 @@ use futures_util::SinkExt;
 use warp::ws::WebSocket;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use warp::ws::Message as WarpMessage;
+use std::path::PathBuf;
+use std::fs::File;
 
 // Re-export room types
 pub use crate::room::state::{Room, MediaSettings, MediaType};
@@ -239,4 +241,33 @@ pub struct ServerConfig {
     pub turn_username: String,
     pub turn_password: String,
     pub ws_port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecordingMetadata {
+    pub call_id: String,
+    pub room_id: String,
+    pub start_time: String,
+    pub participants: HashMap<String, ParticipantInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ParticipantInfo {
+    pub peer_id: String,
+    pub join_time: String,
+    pub file_path: String,
+}
+
+#[derive(Debug)]
+pub struct RoomRecording {
+    pub call_id: String,
+    pub participant_files: HashMap<String, ParticipantRecording>,
+    pub metadata: RecordingMetadata,
+}
+
+#[derive(Debug)]
+pub struct ParticipantRecording {
+    pub file: File,
+    pub peer_id: String,
+    pub rtp_file_path: PathBuf,
 }
