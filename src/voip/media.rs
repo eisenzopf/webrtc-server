@@ -8,6 +8,15 @@ use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecParameters, RTCRtpCodecCapab
 use webrtc::track::track_local::TrackLocalWriter;
 use log::{debug, error};
 use std::collections::HashMap;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::api::APIBuilder;
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::track::track_local::TrackLocal;
 
 pub struct MediaBridge {
     // Channels for RTP packets
@@ -86,6 +95,61 @@ impl MediaBridge {
             payload_type: 111,
             stats_id: String::new(),
         }
+    }
+
+    pub async fn handle_local_sip_call(&mut self, from_user: &str, to_user: &str) -> Result<()> {
+        // Create WebRTC peer connection for the SIP call
+        let peer_connection = self.create_peer_connection().await?;
+        
+        // Create audio track
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                clock_rate: 48000,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+                rtcp_feedback: vec![],
+            },
+            "audio".to_string(),
+            "webrtc-rs".to_string(),
+        ));
+
+        // Add audio transceiver with the track
+        peer_connection.add_transceiver_from_track(
+            Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendrecv,
+                send_encodings: vec![],
+            }),
+        ).await?;
+
+        // Create and set local description
+        let offer = peer_connection.create_offer(None).await?;
+        peer_connection.set_local_description(offer.clone()).await?;
+
+        self.local_track = Some(track);
+        Ok(())
+    }
+
+    async fn create_peer_connection(&self) -> Result<Arc<RTCPeerConnection>> {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
+
+        let api = APIBuilder::new()
+            .with_media_engine(media_engine)
+            .build();
+
+        let config = RTCConfiguration {
+            ice_servers: vec![
+                RTCIceServer {
+                    urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        Ok(Arc::new(api.new_peer_connection(config).await?))
     }
 }
 

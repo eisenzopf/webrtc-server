@@ -8,6 +8,7 @@ pub mod types;
 pub mod monitoring;
 pub mod turn;
 pub mod voip;
+pub mod config;
 
 // Re-export main types for convenience
 pub use signaling::server::SignalingServer;

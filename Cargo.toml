@@ -29,6 +29,7 @@ hmac = "0.12"
 sha1 = "0.10"
 base64 = "0.21"  # Also needed for base64 encoding in TurnCredentials
 rsip = "0.3"
+dotenv = "0.15"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -18,11 +18,13 @@ use webrtc_server::types::WebSocketConnection;
 use warp::Filter;
 use warp::fs;
 use serde::Serialize;
-use webrtc_server::signaling::server::ServerConfig;
+use webrtc_server::config::ServerConfig;
 use warp::cors::CorsForbidden;
 use std::env;
 use std::path::PathBuf;
 use webrtc_server::voip::VoipGateway;
+use webrtc_server::config::SipConfig;
+use dotenv::dotenv;
 
 #[derive(Serialize)]
 struct TurnCredentials {
@@ -35,25 +37,15 @@ struct TurnCredentials {
 }
 
 async fn start_server() -> Result<()> {
+    // Load environment variables from .env file if present
+    dotenv().ok();
+
     // Create recordings directory
     let recording_path = PathBuf::from("recordings");
     std::fs::create_dir_all(&recording_path)?;
 
-    let config = ServerConfig {
-        stun_server: "192.168.1.68".to_string(),
-        stun_port: 3478,
-        turn_server: "192.168.1.68".to_string(),
-        turn_port: 3478,
-        turn_username: "testuser".to_string(),
-        turn_password: "testpass".to_string(),
-        ws_port: 8080,
-        recording_path: Some(recording_path.clone()),
-        sip_enabled: true,
-        sip_server: Some("sip.example.com".to_string()),
-        sip_port: Some(5060),
-        sip_username: Some("sipuser".to_string()),
-        sip_password: Some("sippass".to_string()),
-    };
+    // Load configuration from environment
+    let config = webrtc_server::config::ServerConfig::from_env();
 
     // Create MediaRelayManager with proper arguments
     let media_relay = Arc::new(MediaRelayManager::new(
@@ -67,10 +59,10 @@ async fn start_server() -> Result<()> {
 
     // Create SignalingServer with proper arguments
     let signaling_server = SignalingServer::new(
-        config,
-        "192.168.1.68".to_string(),
-        3478,
-        "your-secret-key".to_string()
+        config.clone(),
+        config.turn_server.clone(),
+        config.turn_port,
+        config.turn_password.clone()
     ).await?;
     
     let ws_route = signaling_server.ws_route();
@@ -108,13 +100,8 @@ async fn main() -> Result<()> {
 
     info!("Starting WebRTC server...");
 
-    // Load configuration
-    let turn_secret = env::var("TURN_SECRET").unwrap_or_else(|_| "your-secret-key".to_string());
-    let turn_server = env::var("TURN_SERVER").unwrap_or_else(|_| "192.168.1.68".to_string());
-    let turn_port = env::var("TURN_PORT")
-        .unwrap_or_else(|_| "3478".to_string())
-        .parse::<u16>()
-        .expect("Invalid TURN port");
+    // Load configuration from environment
+    let config = webrtc_server::config::ServerConfig::from_env();
 
     // Create recordings directory
     let recording_path = PathBuf::from("recordings");
@@ -122,62 +109,38 @@ async fn main() -> Result<()> {
 
     // Create MediaRelayManager for debug server
     let media_relay = Arc::new(MediaRelayManager::new(
-        turn_server.clone(),
-        turn_port,
-        turn_server.clone(),
-        turn_port,
-        "testuser".to_string(),
-        "testpass".to_string()
+        config.turn_server.clone(),
+        config.turn_port,
+        config.turn_server.clone(),
+        config.turn_port,
+        config.turn_username.clone(),
+        config.turn_password.clone()
     ));
 
-    let server_config = ServerConfig {
-        stun_server: turn_server.clone(),
-        stun_port: turn_port,
-        turn_server: turn_server.clone(),
-        turn_port,
-        turn_username: "testuser".to_string(),
-        turn_password: "testpass".to_string(),
-        ws_port: 8080,
-        recording_path: Some(recording_path),
-        sip_enabled: true,
-        sip_server: Some("sip.example.com".to_string()),
-        sip_port: Some(5060),
-        sip_username: Some("sipuser".to_string()),
-        sip_password: Some("sippass".to_string()),
-    };
-
-    // Create SignalingServer first
+    // Create SignalingServer
     let server = SignalingServer::new(
-        server_config.clone(),
-        turn_server.clone(),
-        turn_port,
-        turn_secret.clone()
+        config.clone(),
+        config.turn_server.clone(),
+        config.turn_port,
+        config.turn_password.clone()
     ).await?;
 
     // Initialize VoIP gateway if enabled
-    if server_config.sip_enabled {
-        if let (Some(sip_server), Some(sip_port), Some(sip_user), Some(sip_pass)) = (
-            server_config.sip_server,
-            server_config.sip_port,
-            server_config.sip_username,
-            server_config.sip_password,
-        ) {
-            info!("Initializing VoIP gateway with SIP server: {}:{}", sip_server, sip_port);
-            let voip_gateway = VoipGateway::new(
-                &sip_server,
-                sip_port,
-                &sip_user,
-                &sip_pass,
-                server.handler.clone(),
-            ).await?;
+    if let Some(sip_config) = config.sip_config {
+        info!("Initializing VoIP gateway with local SIP server on {}:{}", 
+            sip_config.bind_address, sip_config.port);
+        
+        let voip_gateway = VoipGateway::new(
+            &format!("{}:{}", sip_config.bind_address, sip_config.port),
+            &sip_config.domain,
+            server.handler.clone(),
+        ).await?;
 
-            // Start VoIP gateway in a separate task
-            tokio::spawn(async move {
-                if let Err(e) = voip_gateway.start().await {
-                    error!("VoIP gateway error: {}", e);
-                }
-            });
-        }
+        tokio::spawn(async move {
+            if let Err(e) = voip_gateway.start().await {
+                error!("VoIP gateway error: {}", e);
+            }
+        });
     }
 
     // Create routes
@@ -201,10 +164,10 @@ async fn main() -> Result<()> {
 
     // Start TURN server
     let turn_server = TurnServer::new(
-        &turn_server,
-        turn_port,
+        &config.turn_server,
+        config.turn_port,
         "webrtc.rs",
-        vec![("testuser".to_string(), "testpass".to_string())],
+        vec![(config.turn_username.clone(), config.turn_password.clone())],
     ).await?;
 
     // Start debug server

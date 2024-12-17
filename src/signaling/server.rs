@@ -24,6 +24,7 @@ use uuid::Uuid;
 use chrono::Utc;
 use warp::ws::Message as WarpMessage;
 use std::path::PathBuf;
+use crate::config::ServerConfig;
 
 pub struct SignalingServer {
     pub address: String,
@@ -35,23 +36,6 @@ pub struct SignalingServer {
     connection_monitor: Arc<ConnectionMonitor>,
     state_manager: Arc<ConnectionStateManager>,
     state_broadcaster: Arc<StateChangeBroadcaster>,
-}
-
-#[derive(Clone)]
-pub struct ServerConfig {
-    pub stun_server: String,
-    pub stun_port: u16,
-    pub turn_server: String,
-    pub turn_port: u16,
-    pub turn_username: String,
-    pub turn_password: String,
-    pub ws_port: u16,
-    pub recording_path: Option<PathBuf>,
-    pub sip_enabled: bool,
-    pub sip_server: Option<String>,
-    pub sip_port: Option<u16>,
-    pub sip_username: Option<String>,
-    pub sip_password: Option<String>,
 }
 
 impl SignalingServer {

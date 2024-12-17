@@ -4,6 +4,7 @@ use tokio::net::UdpSocket;
 use crate::signaling::handler::MessageHandler;
 use super::{VoIPHandler, session::SessionManager, media::MediaBridgeManager};
 use log::{info, error};
+use super::sip_server::SipServer;
 
 pub struct VoipGateway {
     handler: Arc<VoIPHandler>,
@@ -13,28 +14,24 @@ pub struct VoipGateway {
 
 impl VoipGateway {
     pub async fn new(
-        sip_server: &str,
-        sip_port: u16,
-        username: &str,
-        password: &str,
+        bind_addr: &str,
+        domain: &str,
         message_handler: Arc<MessageHandler>,
     ) -> Result<Self> {
-        // Bind to a local address for SIP communication
-        let bind_addr = format!("0.0.0.0:{}", sip_port);
-        
         let session_manager = Arc::new(SessionManager::new());
         let media_manager = Arc::new(MediaBridgeManager::new());
+        let sip_server = Arc::new(SipServer::new(bind_addr, domain).await?);
         
-        let handler = Arc::new(VoIPHandler::new(
+        let handler = VoIPHandler::new(
             message_handler,
-            &bind_addr,
-            sip_server.to_string(),
-            username.to_string(),
-            password.to_string(),
-        ).await?);
+            bind_addr,
+            domain.to_string(),
+            "user".to_string(),  // Default username
+            "pass".to_string(),  // Default password
+        ).await?;
 
         Ok(Self {
-            handler,
+            handler: Arc::new(handler),
             session_manager,
             media_manager,
         })
